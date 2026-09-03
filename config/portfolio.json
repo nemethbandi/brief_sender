@@ -1,0 +1,9 @@
+[
+  {"ticker":"NVDA","name":"NVIDIA","keywords":["NVIDIA","NVDA"],"enabled":true,"threshold_pct":2.0},
+  {"ticker":"MSFT","name":"Microsoft","keywords":["Microsoft","MSFT"],"enabled":true,"threshold_pct":2.0},
+  {"ticker":"AMZN","name":"Amazon","keywords":["Amazon","AMZN"],"enabled":true,"threshold_pct":2.0},
+  {"ticker":"GOOGL","name":"Alphabet","keywords":["Alphabet","Google","GOOGL"],"enabled":true,"threshold_pct":2.0},
+  {"ticker":"META","name":"Meta Platforms","keywords":["Meta Platforms","Meta","META"],"enabled":true,"threshold_pct":2.0},
+  {"ticker":"AVGO","name":"Broadcom","keywords":["Broadcom","AVGO"],"enabled":true,"threshold_pct":2.0},
+  {"ticker":"TSM","name":"Taiwan Semiconductor","keywords":["Taiwan Semiconductor","TSMC","TSM"],"enabled":true,"threshold_pct":2.0}
+]

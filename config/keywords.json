@@ -1,0 +1,13 @@
+{
+  "very_high": ["earnings","guidance","profit warning","acquisition","merger","takeover","bankruptcy","default","sec investigation","fraud","ceo resigns","capital raise","dividend cut","buyback","tariff","sanction","interest rate decision","federal reserve","ecb","inflation","cpi","jobs report","nonfarm payrolls","gdp"],
+  "high": ["analyst upgrade","analyst downgrade","price target","product launch","contract","partnership","regulation"],
+  "macro": {
+    "Federal Reserve":["federal reserve","fed ","fomc"], "ECB":["ecb","european central bank"],
+    "BoE":["bank of england","boe"], "BoJ":["bank of japan","boj"],
+    "Inflation":["inflation","cpi","pce"], "Employment":["employment","jobs report","payrolls","unemployment"],
+    "GDP & PMI":["gdp","pmi"], "Trade policy":["tariff","trade policy","sanction"],
+    "Geopolitics":["geopolit","war","conflict"], "Oil & OPEC":["oil","opec","crude"],
+    "Rates & Treasuries":["yield","rates","treasur"], "FX":["currency","forex","dollar","yen","euro"],
+    "China":["china","chinese"], "Japan":["japan","japanese"], "Europe":["europe","eurozone"], "United States":["united states","u.s."," us "]
+  }
+}

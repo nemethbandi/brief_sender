@@ -263,12 +263,25 @@ def run_daily_brief(
     cc_address: list[str] | None = None,
     bcc_address: list[str] | None = None,
     portfolio_rows: Sequence[dict[str, Any]] | None = None,
+    data_provider: MarketDataProvider | None = None,
 ) -> dict[str, Any]:
     settings = load_settings()
     logical_datetime = normalize_as_of(as_of, settings.timezone)
     recipients = to_address or ([settings.recipient] if settings.recipient else [])
+    selected_provider = os.getenv("MARKET_DATA_PROVIDER", "yahoo").strip().lower()
+    if (
+        data_provider is None
+        and selected_provider in {"internal", "internal_dataframe", "dataframe"}
+    ):
+        from data.internal_data_source import build_internal_data_provider
+        internal_rows, data_provider = build_internal_data_provider(logical_datetime)
+        if portfolio_rows is None:
+            portfolio_rows = internal_rows
     rows = list(portfolio_rows) if portfolio_rows is not None else load_current_portfolio()
-    report, momentum = build_report(logical_datetime, settings, rows)
+    market_service = MarketDataService(data_provider) if data_provider else None
+    report, momentum = build_report(
+        logical_datetime, settings, rows, market_service=market_service,
+    )
     email_result = deliver_report(report, recipients, cc_address, bcc_address)
     logger.info(
         "Daily brief delivered for logical date %s to %d recipients",

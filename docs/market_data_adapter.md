@@ -4,6 +4,100 @@ The report, momentum calculation, database and email renderer are vendor-neutral
 They consume `MarketDataProvider`; vendor-specific access is isolated in an
 adapter selected by `MARKET_DATA_PROVIDER`.
 
+For the planned internal feed, the preferred boundary is
+`DataFrameMarketDataProvider`. In this mode the project does not authenticate to
+or download from LSEG itself. Your extraction code produces one unique ISIN
+list and three DataFrames; the provider validates them and feeds the unchanged
+report logic.
+
+## Preferred internal DataFrame input
+
+The only extraction file you need to edit is
+`data/internal_data_source.py`. Fill in these four functions:
+
+```python
+load_portfolio_isins(as_of)
+load_sp500_universe(as_of)
+load_portfolio_prices(isins, as_of)
+load_momentum_prices(data_ids, as_of)
+```
+
+Leave the remaining provider and workflow code unchanged. Once all four loaders
+return populated DataFrames, set:
+
+```text
+MARKET_DATA_PROVIDER=internal_dataframe
+```
+
+The unchanged Airflow DAG will then use the internal DataFrames automatically.
+
+### 1. Portfolio ISIN list
+
+The colleague-owned SQL loader returns the unique held ISINs:
+
+```python
+["US5949181045", "US67066G1040"]
+```
+
+`load_portfolio_isins(as_of)` removes SQL details from the rest of the project.
+The returned ISINs are passed directly to `load_portfolio_prices()`.
+
+### 2. S&P 500 universe
+
+One row per constituent:
+
+```text
+ticker | data_id | sector             | industry
+MSFT   | MSFT.O  | Technology         | Software
+BRK-B  | BRKb.N  | Financial Services | Insurance
+```
+
+Required columns: `ticker`, `data_id`. `sector` and `industry` are optional but
+strongly recommended; missing values become `Unknown`.
+
+### 3. Portfolio reference data and daily prices
+
+Long format, at least six months, one row per instrument and trading day:
+
+```text
+isin         | ticker | data_id | name      | threshold_pct | date       | close
+US5949181045 | MSFT   | MSFT.O  | Microsoft | 2.0          | 2026-09-01 | 505.12
+US5949181045 | MSFT   | MSFT.O  | Microsoft | 2.0          | 2026-09-02 | 509.30
+```
+
+Required columns: `isin`, `ticker`, `data_id`, `date`, `close`. `name` and
+`threshold_pct` are optional and default to the ticker and 2%. These values
+resolve the SQL ISINs and drive current/previous close, notable moves, the
+stop-loss tracker and portfolio charts.
+
+### 4. Momentum daily values
+
+Long format, preferably 15 months:
+
+```text
+data_id | date       | value
+MSFT.O  | 2026-09-01 | 1245.31
+MSFT.O  | 2026-09-02 | 1256.28
+```
+
+Required columns: `data_id`, `date`, `value`. `value` should be a
+corporate-action-adjusted price or Datastream Return Index. At least 253 valid
+daily observations are needed per security.
+
+### Airflow wiring point
+
+Keep extraction and report generation in the same task unless the DataFrames
+are persisted outside XCom. After the four functions are filled, the existing
+DAG wiring is already complete:
+
+```python
+MARKET_DATA_PROVIDER=internal_dataframe
+```
+
+Duplicate `(data_id, date)` price rows, ambiguous universe mappings and missing
+required columns fail validation before the momentum database or email is
+updated.
+
 ## Required datasets
 
 The provider must supply four normalized datasets:
@@ -56,7 +150,8 @@ Security metadata:
 ]
 ```
 
-Portfolio rows from the future SQL query may carry a separate LSEG identifier:
+The workflow derives portfolio rows from the reference columns repeated in the
+portfolio-price DataFrame:
 
 ```python
 [
@@ -113,6 +208,10 @@ be smoke-tested before the final content mapping is supplied.
 The S&P 500 chain result is rejected when it contains fewer than
 `LSEG_MIN_UNIVERSE_SIZE` instruments (default 400), preventing an entitlement or
 partial-response problem from silently becoming the new momentum snapshot.
+
+The direct `lseg.data` adapter is optional. It can be ignored when the internal
+system performs the extraction and supplies the three normalized DataFrames.
+In that case `lseg-data` does not need to be installed by this project.
 
 If the company exposes Datastream through an internal wrapper instead of
 `lseg.data`, implement the same methods on a `MarketDataProvider` subclass or

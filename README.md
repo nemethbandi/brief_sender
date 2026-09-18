@@ -88,6 +88,13 @@ Library adapter. Portfolio quotes/history, the S&P 500 momentum universe and
 history, and sector/industry metadata use the same selected provider, while the
 report layout, momentum database and email delivery remain unchanged.
 
+For an internal SQL/Datastream extraction, inject `DataFrameMarketDataProvider`
+into `run_daily_brief()`. It expects separate normalized S&P universe, portfolio
+price and momentum-value DataFrames and does not prescribe how they are loaded.
+The four intentionally empty integration functions are collected in
+`data/internal_data_source.py`; after implementing them, select
+`MARKET_DATA_PROVIDER=internal_dataframe` and the existing DAG uses them.
+
 See `docs/market_data_adapter.md` for the normalized data contract, LSEG field
 configuration, RIC mapping and installation details.
 

@@ -260,8 +260,11 @@ def main() -> None:
                     } for row in changed]), hide_index=True, use_container_width=True)
             sector_rows = st.session_state.momentum_sector_comparison
             if sector_rows:
-                st.markdown("#### Momentum Top 25 Sector Distribution")
-                st.caption("Each available bar represents 100% of the ranked securities (up to 25).")
+                st.markdown("#### Momentum Top 100 Sector Distribution")
+                st.caption("Top 100 = top 20% of 500 ranked securities. Equal weights: 1% each when 100 are available.")
+                sample_size = sum(row["current_count"] for row in sector_rows)
+                if sample_size < 100:
+                    st.info(f"Only {sample_size} ranked securities are available; weights use that sample.")
                 sector_figure = go.Figure()
                 previous_date = st.session_state.momentum_comparison_date
                 three_month_date = st.session_state.momentum_sector_3m_date

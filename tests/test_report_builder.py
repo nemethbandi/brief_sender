@@ -115,7 +115,7 @@ def test_report_contains_100_percent_sector_distribution_comparison() -> None:
         "Brief", [], momentum_sector_comparison=sectors,
         momentum_comparison_date="2026-07-26", momentum_sector_3m_date="2026-05-26",
     )
-    assert "MOMENTUM TOP 25 SECTOR DISTRIBUTION" in report.html
+    assert "MOMENTUM TOP 100 SECTOR DISTRIBUTION" in report.html
     assert "Technology 40.0%" in report.html
     assert "Healthcare 80.0%" in report.html
     assert "+20.0 pp" in report.html

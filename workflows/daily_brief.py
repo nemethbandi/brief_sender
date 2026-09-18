@@ -70,7 +70,7 @@ def _enrich_metadata(
         enriched["industry"] = None
     for index, row in enriched.iterrows():
         details = metadata.get(str(row["ticker"]), {})
-        if pd.isna(row.get("sector")) or not row.get("sector"):
+        if momentum_module.normalize_sector(row.get("sector")) == "Unknown":
             enriched.at[index, "sector"] = details.get("sector", "Unknown")
         if pd.isna(row.get("industry")) or not row.get("industry"):
             enriched.at[index, "industry"] = details.get("industry", "Unknown")
@@ -98,9 +98,9 @@ def build_momentum_context(
     three_month_date = None if three_month.empty else str(three_month.iloc[0]["as_of_date"])
 
     metadata_tickers = sorted(set(
-        ranking.sort_values("rank").head(25)["ticker"].tolist()
-        + previous.sort_values("rank").head(25)["ticker"].tolist()
-        + three_month.sort_values("rank").head(25)["ticker"].tolist()
+        ranking.sort_values("rank").head(momentum_module.SECTOR_TOP_N)["ticker"].tolist()
+        + previous.sort_values("rank").head(momentum_module.SECTOR_TOP_N)["ticker"].tolist()
+        + three_month.sort_values("rank").head(momentum_module.SECTOR_TOP_N)["ticker"].tolist()
     ))
     stale_tickers = database.metadata_tickers_to_refresh(metadata_tickers)
     if stale_tickers:
@@ -119,7 +119,7 @@ def build_momentum_context(
     rows_written = database.upsert_rankings(as_of_date, ranking)
     changes = None if previous.empty else compare_rankings(ranking, previous, n=25)
     sectors = momentum_module.compare_sector_distribution(
-        ranking, previous, three_month, n=25,
+        ranking, previous, three_month, n=momentum_module.SECTOR_TOP_N,
     )
     logger.info(
         "Momentum context complete for %s: universe=%d ranking=%d persisted=%d",

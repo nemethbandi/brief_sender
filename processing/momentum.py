@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import math
 import os
+import colorsys
+import hashlib
+import re
 
 import numpy as np
 import pandas as pd
@@ -14,6 +17,7 @@ TRADING_DAYS_6M = int(os.getenv("MOMENTUM_TRADING_DAYS_6M", "126"))
 TRADING_DAYS_12M = int(os.getenv("MOMENTUM_TRADING_DAYS_12M", "252"))
 ANNUALIZATION_DAYS = int(os.getenv("MOMENTUM_ANNUALIZATION_DAYS", "252"))
 MIN_VOLATILITY = float(os.getenv("MOMENTUM_MIN_VOLATILITY", "1e-8"))
+SECTOR_TOP_N = 100
 
 
 RANKING_COLUMNS = [
@@ -22,19 +26,55 @@ RANKING_COLUMNS = [
 ]
 
 SECTOR_COLORS = {
-    "Technology": "#3a7059",
-    "Communication Services": "#50b748",
-    "Consumer Cyclical": "#8acb72",
-    "Consumer Defensive": "#b0d98c",
-    "Financial Services": "#2f8f83",
-    "Healthcare": "#65a9a1",
-    "Industrials": "#7c8f74",
-    "Energy": "#d18a00",
-    "Basic Materials": "#b79b52",
-    "Real Estate": "#9678a8",
-    "Utilities": "#6f8eb2",
+    "Technology": "#2563eb",
+    "Communication Services": "#9333ea",
+    "Consumer Cyclical": "#ea580c",
+    "Consumer Defensive": "#16a34a",
+    "Financial Services": "#0891b2",
+    "Healthcare": "#db2777",
+    "Industrials": "#854d0e",
+    "Energy": "#dc2626",
+    "Basic Materials": "#0f766e",
+    "Real Estate": "#4f46e5",
+    "Utilities": "#a16207",
     "Unknown": "#9aa8a0",
 }
+
+
+def normalize_sector(value: object) -> str:
+    """Unify common LSEG/GICS names and formatting across saved periods."""
+    if value is None or pd.isna(value):
+        return "Unknown"
+    name = " ".join(str(value).split())
+    key = re.sub(r"[^a-z0-9]", "", name.casefold())
+    aliases = {
+        "informationtechnology": "Technology",
+        "financials": "Financial Services",
+        "healthcare": "Healthcare",
+        "consumercyclicals": "Consumer Cyclical",
+        "consumerdiscretionary": "Consumer Cyclical",
+        "consumernoncyclicals": "Consumer Defensive",
+        "consumernoncyclical": "Consumer Defensive",
+        "consumerstaples": "Consumer Defensive",
+        "telecommunicationservices": "Communication Services",
+        "telecommunicationsservices": "Communication Services",
+        "materials": "Basic Materials",
+    }
+    canonical = {re.sub(r"[^a-z0-9]", "", sector.casefold()): sector for sector in SECTOR_COLORS}
+    if key in {"", "na", "nan", "none", "null", "unknown", "unclassified"}:
+        return "Unknown"
+    return aliases.get(key, canonical.get(key, name))
+
+
+def sector_color(sector: str) -> str:
+    name = normalize_sector(sector)
+    if name in SECTOR_COLORS:
+        return SECTOR_COLORS[name]
+    # Stable across processes, dates and subsets; an unfamiliar name is not missing data.
+    digest = hashlib.sha256(name.casefold().encode("utf-8")).digest()
+    hue = int.from_bytes(digest[:4], "big") / 2**32
+    rgb = colorsys.hls_to_rgb(hue, 0.42, 0.65)
+    return "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb)
 
 
 def canonical_ticker(symbol: str) -> str:
@@ -112,14 +152,14 @@ def get_top_momentum(ranking: pd.DataFrame, n: int = 25) -> pd.DataFrame:
 
 def compare_sector_distribution(
     current_df: pd.DataFrame, previous_df: pd.DataFrame,
-    three_month_df: pd.DataFrame | None = None, n: int = 25,
+    three_month_df: pd.DataFrame | None = None, n: int = SECTOR_TOP_N,
 ) -> list[dict[str, float | int | str]]:
     """Return current/1M/3M Top-N sector shares; every available side totals 100%."""
     def counts(frame: pd.DataFrame) -> tuple[dict[str, int], int]:
         top = frame.sort_values("rank").head(n).copy()
         if "sector" not in top.columns:
             top["sector"] = "Unknown"
-        top["sector"] = top["sector"].fillna("Unknown").replace("", "Unknown")
+        top["sector"] = top["sector"].map(normalize_sector)
         values = top["sector"].astype(str).value_counts().to_dict()
         return values, len(top)
 
@@ -147,7 +187,7 @@ def compare_sector_distribution(
             "three_month_pct": three_month_pct,
             "change_pp": current_pct - previous_pct,
             "change_3m_pp": current_pct - three_month_pct,
-            "color": SECTOR_COLORS.get(sector, "#596579"),
+            "color": sector_color(sector),
         })
     return sorted(
         rows,

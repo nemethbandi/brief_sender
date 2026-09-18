@@ -57,6 +57,14 @@ Daily rankings are upserted by `(as_of_date, ticker)` into
 separate. Existing databases are not deleted. If you override `MOMENTUM_DB_PATH`,
 choose a dedicated LSEG database rather than an old mixed-source file.
 
+Sector composition uses the **Top 100** momentum-ranked securities in each of
+the current, one-month and three-month snapshots (top 20% when 500 are ranked).
+Securities have equal weight: 1% each for a complete 100-security sample.
+If fewer than 100 are available, the available sample is normalized to 100%.
+The separate displayed stock ranking and monthly membership changes remain Top 25.
+Sector names are normalized across common LSEG/GICS aliases; each sector has a
+stable color across periods. Only missing classifications are gray (`Unknown`).
+
 Monthly and quarterly comparisons use actual saved snapshots. Missing periods
 show N/A until sufficient history exists. Sector/industry metadata comes from
 the internal universe and is cached for 30 days. Missing classifications are

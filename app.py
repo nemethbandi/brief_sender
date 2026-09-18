@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
-import importlib
-import math
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,32 +9,14 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from config import settings as settings_module
-importlib.reload(settings_module)
-BASE_DIR = settings_module.BASE_DIR
-AppSettings = settings_module.AppSettings
-load_settings = settings_module.load_settings
-save_settings = settings_module.save_settings
-from data import market_data as market_data_module
-importlib.reload(market_data_module)
-MarketDataService = market_data_module.MarketDataService
-from mail import outlook_sender as outlook_sender_module
-importlib.reload(outlook_sender_module)
-OutlookError = outlook_sender_module.OutlookError
-OutlookSender = outlook_sender_module.OutlookSender
+from config.settings import AppSettings, load_settings, save_settings
+from data.market_data import MarketDataService
+from mail.outlook_sender import OutlookError, OutlookSender
 from processing.market_analyzer import (
     format_change, format_price, select_portfolio_performers, select_stop_loss_signals,
 )
-from processing import momentum as momentum_module
-importlib.reload(momentum_module)
-from reports import report_builder as report_builder_module
-from storage import database as database_module
-importlib.reload(database_module)
-Database = database_module.Database
-from storage import momentum_database as momentum_database_module
-importlib.reload(momentum_database_module)
-MomentumDatabase = momentum_database_module.MomentumDatabase
-from utils.helpers import normalize_ticker, utc_now
+from storage.database import Database
+from workflows.daily_brief import load_brief_data, build_report
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -84,214 +63,60 @@ def style_movement_table(frame: pd.DataFrame, column: str) -> pd.io.formats.styl
 
 @st.cache_resource
 def database() -> Database:
-    db = Database()
-    db.seed_json(BASE_DIR / "config" / "portfolio.json", BASE_DIR / "config" / "assets.json")
-    return db
+    return Database()
 
 
-@st.cache_resource
-def momentum_database() -> MomentumDatabase:
-    return MomentumDatabase()
-
-
-@st.cache_data(ttl=180, show_spinner=False)
-def load_market_data(assets_json: str):
-    return MarketDataService().get_quotes(json.loads(assets_json))
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_portfolio_history(assets_json: str, period: str):
-    return MarketDataService().get_histories(json.loads(assets_json), period)
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_momentum_ranking(as_of_date: str):
-    provider = market_data_module.create_market_data_provider()
-    universe = provider.get_momentum_universe()
-    prices = provider.get_momentum_prices(universe)
-    ranking = momentum_module.calculate_momentum(prices)
-    if ranking.empty:
-        raise ValueError("No securities produced a valid momentum score")
-    logger.info("Momentum as-of date: %s", as_of_date)
-    return ranking.to_dict("records"), len(universe)
-
-
-def refresh_data(force: bool = False) -> None:
-    db, settings = database(), st.session_state.settings
-    if force:
-        load_market_data.clear(); load_portfolio_history.clear(); load_momentum_ranking.clear()
-    portfolio = db.list_portfolio(True)
-    portfolio_assets = [
-        {"name": p["name"] or p["ticker"], "ticker": p["ticker"],
-         "asset_class": "stock", "region": "Portfolio", "format": "currency",
-         "threshold_pct": p["threshold_pct"]}
-        for p in portfolio
-    ]
-    with st.spinner("Retrieving portfolio and momentum market data..."):
-        st.session_state.quotes = []
-        st.session_state.portfolio_quotes = load_market_data(json.dumps(portfolio_assets, sort_keys=True))
-        assets_json = json.dumps(portfolio_assets, sort_keys=True)
-        chart_period = getattr(settings, "chart_period", "3mo")
-        st.session_state.portfolio_history = load_portfolio_history(assets_json, chart_period)
-        st.session_state.portfolio_stop_history = (
-            st.session_state.portfolio_history
-            if chart_period == "6mo" else load_portfolio_history(assets_json, "6mo")
-        )
-        as_of_date = datetime.now(ZoneInfo(settings.timezone)).date()
-        try:
-            momentum_rows, universe_size = load_momentum_ranking(as_of_date.isoformat())
-            ranking = pd.DataFrame(momentum_rows, columns=momentum_module.RANKING_COLUMNS)
-            momentum_db = momentum_database()
-            target_date = momentum_database_module.calendar_month_before(as_of_date)
-            previous_ranking = momentum_db.get_latest_ranking_on_or_before(target_date)
-            comparison_is_demo = previous_ranking.empty
-            if comparison_is_demo:
-                previous_ranking = momentum_database_module.build_demo_previous_ranking(ranking)
-                comparison_date = target_date.isoformat()
-            else:
-                comparison_date = str(previous_ranking.iloc[0]["as_of_date"])
-            three_month_target = momentum_database_module.calendar_months_before(as_of_date, 3)
-            three_month_ranking = momentum_db.get_latest_ranking_on_or_before(three_month_target)
-            three_month_is_demo = three_month_ranking.empty
-            if three_month_is_demo:
-                three_month_ranking = momentum_database_module.build_demo_previous_ranking(
-                    ranking, replacement_count=4,
-                )
-                three_month_date = three_month_target.isoformat()
-            else:
-                three_month_date = str(three_month_ranking.iloc[0]["as_of_date"])
-            metadata_tickers = sorted(set(
-                ranking.sort_values("rank").head(25)["ticker"].tolist()
-                + previous_ranking.sort_values("rank").head(25)["ticker"].tolist()
-                + three_month_ranking.sort_values("rank").head(25)["ticker"].tolist()
-            ))
-            stale_tickers = momentum_db.metadata_tickers_to_refresh(metadata_tickers)
-            if stale_tickers:
-                provider = market_data_module.create_market_data_provider()
-                metadata_rows = provider.get_security_metadata(stale_tickers)
-                resolved_rows = [
-                    row for row in metadata_rows
-                    if row["sector"] != "Unknown" or row["industry"] != "Unknown"
-                ]
-                momentum_db.upsert_security_metadata(resolved_rows)
-            metadata = momentum_db.get_security_metadata(metadata_tickers)
-
-            def enrich_metadata(frame: pd.DataFrame) -> pd.DataFrame:
-                enriched = frame.copy()
-                if "sector" not in enriched.columns:
-                    enriched["sector"] = None
-                if "industry" not in enriched.columns:
-                    enriched["industry"] = None
-                for index, row in enriched.iterrows():
-                    details = metadata.get(str(row["ticker"]), {})
-                    if pd.isna(row.get("sector")) or not row.get("sector"):
-                        enriched.at[index, "sector"] = details.get("sector", "Unknown")
-                    if pd.isna(row.get("industry")) or not row.get("industry"):
-                        enriched.at[index, "industry"] = details.get("industry", "Unknown")
-                return enriched
-
-            ranking = enrich_metadata(ranking)
-            previous_ranking = enrich_metadata(previous_ranking)
-            three_month_ranking = enrich_metadata(three_month_ranking)
-            written = momentum_db.upsert_rankings(as_of_date, ranking)
-            comparison = momentum_database_module.compare_rankings(
-                ranking, previous_ranking, n=25,
-            )
-            sector_comparison = momentum_module.compare_sector_distribution(
-                ranking, previous_ranking, three_month_ranking, n=25,
-            )
-            momentum_rows = ranking.to_dict("records")
-            st.session_state.momentum_ranking = momentum_rows
-            st.session_state.momentum_as_of = as_of_date.isoformat()
-            st.session_state.momentum_comparison = comparison
-            st.session_state.momentum_comparison_date = comparison_date
-            st.session_state.momentum_comparison_demo = comparison_is_demo
-            st.session_state.momentum_sector_comparison = sector_comparison
-            st.session_state.momentum_sector_3m_date = three_month_date
-            st.session_state.momentum_sector_3m_demo = three_month_is_demo
-            st.session_state.momentum_warning = None
-            logger.info(
-                "Momentum daily run complete: universe=%d, ranking=%d, persisted=%d",
-                universe_size, len(ranking), written,
-            )
-        except Exception as exc:
-            logger.exception("Momentum daily run failed without blocking the portfolio brief")
-            st.session_state.momentum_ranking = []
-            st.session_state.momentum_as_of = as_of_date.isoformat()
-            st.session_state.momentum_comparison = None
-            st.session_state.momentum_comparison_date = None
-            st.session_state.momentum_comparison_demo = False
-            st.session_state.momentum_sector_comparison = None
-            st.session_state.momentum_sector_3m_date = None
-            st.session_state.momentum_sector_3m_demo = False
-            st.session_state.momentum_warning = f"Momentum ranking unavailable: {str(exc)[:240]}"
-    st.session_state.refreshed_at = utc_now()
+def refresh_data() -> None:
+    # Invalidate the old snapshot before attempting a refresh.
     st.session_state.report = None
-    logger.info("Portfolio refresh completed: %d position quotes",
-                len(st.session_state.portfolio_quotes))
+    st.session_state.brief_data = None
+    st.session_state.portfolio_rows = []
+    st.session_state.portfolio_quotes = []
+    st.session_state.portfolio_history = {}
+    st.session_state.portfolio_stop_history = {}
+    st.session_state.momentum_ranking = []
+    st.session_state.momentum_comparison = None
+    st.session_state.momentum_sector_comparison = None
+    st.session_state.momentum_warning = None
+    st.session_state.refreshed_at = None
+    st.session_state.confirm_send = False
+    st.session_state.show_preview = False
+    settings = st.session_state.settings
+    with st.spinner("Retrieving internal LSEG portfolio and momentum data..."):
+        try:
+            data = load_brief_data(datetime.now(ZoneInfo(settings.timezone)), settings)
+        except Exception as exc:
+            logger.exception("Internal LSEG refresh failed")
+            st.error(f"LSEG data could not be loaded: {exc}")
+            return
+    st.session_state.brief_data = data
+    st.session_state.portfolio_rows = data.portfolio_rows
+    st.session_state.portfolio_quotes = data.quotes
+    st.session_state.portfolio_history = data.histories
+    st.session_state.portfolio_stop_history = data.stop_histories
+    st.session_state.momentum_ranking = data.momentum["ranking"].to_dict("records")
+    st.session_state.momentum_as_of = data.as_of.date().isoformat()
+    st.session_state.momentum_comparison = data.momentum["changes"]
+    st.session_state.momentum_comparison_date = data.momentum["one_month_date"]
+    st.session_state.momentum_sector_comparison = data.momentum["sector_comparison"]
+    st.session_state.momentum_sector_3m_date = data.momentum["three_month_date"]
+    st.session_state.momentum_warning = data.momentum_warning
+    st.session_state.refreshed_at = data.as_of
 
 
 def generate_report() -> None:
-    settings = st.session_state.settings
-    stock_quotes = st.session_state.portfolio_quotes
-    notable = MarketDataService.notable_portfolio_moves(stock_quotes)
-    timestamp = st.session_state.refreshed_at
-    # Streamlit reruns app.py without always reloading imported local modules.
-    # Reloading this small, deterministic module prevents stale signatures
-    # during local development and after an in-place application update.
-    importlib.reload(report_builder_module)
-    st.session_state.report = report_builder_module.ReportBuilder(timezone_name=settings.timezone).build(
-        settings.report_title, notable, timestamp, portfolio_quotes=stock_quotes,
-        portfolio_history=st.session_state.portfolio_history,
-        stop_loss_history=st.session_state.portfolio_stop_history,
-        momentum_top25=st.session_state.momentum_ranking[:25],
-        momentum_changes=st.session_state.momentum_comparison,
-        momentum_sector_comparison=st.session_state.momentum_sector_comparison,
-        momentum_sector_3m_date=st.session_state.momentum_sector_3m_date,
-        momentum_sector_3m_demo=st.session_state.momentum_sector_3m_demo,
-        momentum_comparison_date=st.session_state.momentum_comparison_date,
-        momentum_comparison_demo=st.session_state.momentum_comparison_demo)
-    logger.info("Generated report with %d article references", st.session_state.report.article_count)
+    st.session_state.report = build_report(st.session_state.brief_data, st.session_state.settings)
 
 
 def sidebar() -> None:
-    db, settings = database(), st.session_state.settings
+    settings = st.session_state.settings
     with st.sidebar:
         st.header("Portfolio")
-        portfolio_df = pd.DataFrame(db.list_portfolio())[["enabled", "ticker", "name", "threshold_pct"]]
-        edited = st.data_editor(portfolio_df, hide_index=True, num_rows="dynamic", use_container_width=True,
-                                column_config={
-                                    "enabled": st.column_config.CheckboxColumn("On"),
-                                    "ticker": st.column_config.TextColumn("Ticker", required=True),
-                                    "threshold_pct": st.column_config.NumberColumn(
-                                        "Notable threshold (%)", min_value=0.1, max_value=100.0,
-                                        step=0.1, format="%.1f", required=True,
-                                        help="Absolute daily move required for this position to become notable.",
-                                    ),
-                                })
-        if st.button("Save portfolio", use_container_width=True):
-            try:
-                rows = []
-                for row in edited.to_dict("records"):
-                    if not str(row.get("ticker", "")).strip():
-                        continue
-                    threshold = float(row.get("threshold_pct") or 2.0)
-                    if not math.isfinite(threshold) or not 0.1 <= threshold <= 100.0:
-                        raise ValueError("Each notable threshold must be between 0.1% and 100.0%.")
-                    rows.append({"enabled": bool(row["enabled"]), "ticker": normalize_ticker(str(row["ticker"])),
-                                 "name": str(row.get("name", "")).strip(), "threshold_pct": threshold})
-                db.replace_portfolio(rows)
-                st.cache_data.clear()
-                st.session_state.portfolio_quotes = []
-                st.session_state.portfolio_history = {}
-                st.session_state.portfolio_stop_history = {}
-                st.session_state.momentum_ranking = []
-                st.session_state.momentum_comparison = None
-                st.session_state.momentum_sector_comparison = None
-                st.session_state.report = None
-                st.session_state.refreshed_at = None
-                st.success("Portfolio saved. Refresh Data is required before generating a new brief.")
-            except (ValueError, TypeError, KeyError) as exc: st.error(str(exc))
+        st.caption("Source: internal LSEG / Datastream. Portfolio positions come from the SQL ISIN list.")
+        if st.session_state.portfolio_rows:
+            st.dataframe(pd.DataFrame(st.session_state.portfolio_rows), hide_index=True, use_container_width=True)
+        else:
+            st.info("Refresh Data to load the portfolio.")
         with st.expander("Settings"):
             recipient = st.text_input("Portfolio Manager email", settings.recipient)
             title = st.text_input("Report title", settings.report_title)
@@ -299,11 +124,10 @@ def sidebar() -> None:
             saved_period = getattr(settings, "chart_period", "3mo")
             chart_period = st.selectbox("Historical chart period", periods,
                                         index=periods.index(saved_period) if saved_period in periods else 1)
-            auto_open = st.checkbox("Default to Open in Outlook", settings.auto_open_outlook)
             if st.button("Save settings", use_container_width=True):
                 st.session_state.settings = AppSettings(recipient=recipient.strip(), report_title=title.strip() or "OTP Alapkezelő Morning Brief",
                     chart_period=chart_period,
-                    auto_open_outlook=auto_open, timezone=settings.timezone, thresholds=settings.thresholds)
+                    timezone=settings.timezone)
                 save_settings(st.session_state.settings); st.success("Settings saved.")
 
 
@@ -312,24 +136,23 @@ def main() -> None:
     if st.session_state.settings.report_title == "Morning Market Brief":
         st.session_state.settings.report_title = "OTP Alapkezelő Morning Brief"
         save_settings(st.session_state.settings)
-    for key, default in {"quotes": [], "portfolio_quotes": [], "portfolio_history": {},
+    for key, default in {"brief_data": None, "portfolio_rows": [], "portfolio_quotes": [], "portfolio_history": {},
                          "portfolio_stop_history": {},
                          "momentum_ranking": [], "momentum_as_of": None,
                          "momentum_warning": None,
                          "momentum_comparison": None, "momentum_comparison_date": None,
-                         "momentum_comparison_demo": False,
                          "momentum_sector_comparison": None,
-                         "momentum_sector_3m_date": None, "momentum_sector_3m_demo": False,
+                         "momentum_sector_3m_date": None,
                          "report": None, "refreshed_at": None}.items():
         if key not in st.session_state: st.session_state[key] = default
-    sidebar()
-    refreshed = st.session_state.refreshed_at.strftime("%H:%M:%S UTC") if st.session_state.refreshed_at else "Not yet refreshed"
+    refreshed = st.session_state.refreshed_at.strftime("%H:%M:%S %Z") if st.session_state.refreshed_at else "Not yet refreshed"
     st.markdown(f'<div class="brief-title">OTP ALAPKEZELŐ MORNING BRIEF</div><div class="brief-sub">Last refresh: {refreshed}</div>', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
-    if c1.button("Refresh Data", type="primary", use_container_width=True): refresh_data(True)
+    if c1.button("Refresh Data", type="primary", use_container_width=True): refresh_data()
     if c2.button("Generate Brief", use_container_width=True, disabled=not st.session_state.portfolio_quotes): generate_report()
     if c3.button("Preview Email", use_container_width=True, disabled=st.session_state.report is None): st.session_state.show_preview = True
     if c4.button("Send Email", use_container_width=True, disabled=st.session_state.report is None): st.session_state.confirm_send = True
+    sidebar()
     if st.session_state.portfolio_quotes:
         portfolio_quotes = st.session_state.portfolio_quotes
 
@@ -411,22 +234,13 @@ def main() -> None:
                 "Momentum Score": f"{float(row['momentum_score']):+.2f}",
             } for row in st.session_state.momentum_ranking[:25]])
             st.caption(
-                f"S&P 500 + Nasdaq-100 · as of {st.session_state.momentum_as_of} · full ranking saved to SQLite"
+                f"S&P 500 · as of {st.session_state.momentum_as_of} · full ranking saved to SQLite"
             )
             st.dataframe(momentum_frame, hide_index=True, use_container_width=True)
             comparison = st.session_state.momentum_comparison
             if comparison:
                 st.markdown("#### Momentum Changes vs 1 Month Ago")
-                if st.session_state.momentum_comparison_demo:
-                    st.warning(
-                        "DEMO comparison: no real month-old snapshot exists yet. "
-                        "The preview uses generated prior ranks that are not saved to SQLite."
-                    )
-                else:
-                    st.caption(
-                        f"Compared with the latest saved ranking on or before the monthly target: "
-                        f"{st.session_state.momentum_comparison_date}"
-                    )
+                st.caption(f"Compared with saved ranking: {st.session_state.momentum_comparison_date}")
                 entered_col, exited_col = st.columns(2)
                 entered = comparison.get("entered", [])
                 exited = comparison.get("exited", [])
@@ -447,30 +261,23 @@ def main() -> None:
             sector_rows = st.session_state.momentum_sector_comparison
             if sector_rows:
                 st.markdown("#### Momentum Top 25 Sector Distribution")
-                st.caption("Each bar represents 100% of the Top 25; one security equals 4 percentage points.")
+                st.caption("Each available bar represents 100% of the ranked securities (up to 25).")
                 sector_figure = go.Figure()
-                previous_label = (
-                    "1M Ago (Demo)" if st.session_state.momentum_comparison_demo
-                    else f"1M Ago ({st.session_state.momentum_comparison_date})"
-                )
-                three_month_label = (
-                    "3M Ago (Demo)" if st.session_state.momentum_sector_3m_demo
-                    else f"3M Ago ({st.session_state.momentum_sector_3m_date})"
-                )
+                previous_date = st.session_state.momentum_comparison_date
+                three_month_date = st.session_state.momentum_sector_3m_date
+                previous_label = f"1M Ago ({previous_date})"
+                three_month_label = f"3M Ago ({three_month_date})"
+                if not previous_date or not three_month_date:
+                    st.info("Historical comparisons become available as real daily snapshots accumulate.")
                 for row in sector_rows:
                     sector_figure.add_trace(go.Bar(
                         name=row["sector"], orientation="h",
-                        y=["Current", previous_label, three_month_label],
-                        x=[row["current_pct"], row["previous_pct"], row["three_month_pct"]],
+                        y=["Current"] + ([previous_label] if previous_date else []) + ([three_month_label] if three_month_date else []),
+                        x=[row["current_pct"]] + ([row["previous_pct"]] if previous_date else []) + ([row["three_month_pct"]] if three_month_date else []),
                         marker_color=row["color"],
-                        text=[
-                            (f"{row['sector']} {row['current_pct']:.0f}%" if row["current_pct"] >= 16
-                             else f"{row['current_pct']:.0f}%" if row["current_pct"] >= 8 else ""),
-                            (f"{row['sector']} {row['previous_pct']:.0f}%" if row["previous_pct"] >= 16
-                             else f"{row['previous_pct']:.0f}%" if row["previous_pct"] >= 8 else ""),
-                            (f"{row['sector']} {row['three_month_pct']:.0f}%" if row["three_month_pct"] >= 16
-                             else f"{row['three_month_pct']:.0f}%" if row["three_month_pct"] >= 8 else ""),
-                        ],
+                        text=[f"{row['current_pct']:.0f}%"]
+                             + ([f"{row['previous_pct']:.0f}%"] if previous_date else [])
+                             + ([f"{row['three_month_pct']:.0f}%"] if three_month_date else []),
                         textposition="inside",
                         hovertemplate=(
                             f"{row['sector']}<br>%{{y}}: %{{x:.1f}}%<extra></extra>"
@@ -488,10 +295,10 @@ def main() -> None:
                 st.dataframe(pd.DataFrame([{
                     "Sector": row["sector"],
                     "Current": f"{row['current_pct']:.1f}%",
-                    "1M Ago": f"{row['previous_pct']:.1f}%",
-                    "Δ 1M": f"{row['change_pp']:+.1f} pp",
-                    "3M Ago": f"{row['three_month_pct']:.1f}%",
-                    "Δ 3M": f"{row['change_3m_pp']:+.1f} pp",
+                    "1M Ago": f"{row['previous_pct']:.1f}%" if previous_date else "N/A",
+                    "Δ 1M": f"{row['change_pp']:+.1f} pp" if previous_date else "N/A",
+                    "3M Ago": f"{row['three_month_pct']:.1f}%" if three_month_date else "N/A",
+                    "Δ 3M": f"{row['change_3m_pp']:+.1f} pp" if three_month_date else "N/A",
                 } for row in sector_rows]), hide_index=True, use_container_width=True)
         elif not st.session_state.momentum_warning:
             st.info("Refresh Data to calculate the momentum ranking.")
@@ -518,7 +325,7 @@ def main() -> None:
         st.dataframe(style_movement_table(portfolio_frame, "Daily Change"), hide_index=True, use_container_width=True)
 
         st.subheader("Historical Price Charts")
-        st.caption(f"Adjusted daily closing prices · {getattr(st.session_state.settings, 'chart_period', '3mo')}")
+        st.caption(f"Daily closing prices · {getattr(st.session_state.settings, 'chart_period', '3mo')}")
         history_tabs = st.tabs([quote.ticker for quote in portfolio_quotes])
         for tab, quote in zip(history_tabs, portfolio_quotes):
             with tab:
@@ -536,7 +343,7 @@ def main() -> None:
                     title={"text": f"{quote.ticker} · {quote.name}", "font": {"size": 16, "color": "#3a7059"}},
                     paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", hovermode="x unified",
                     xaxis={"title": None, "showgrid": False, "rangeslider": {"visible": False}},
-                    yaxis={"title": "Adjusted price", "gridcolor": "#e3ebe6"},
+                    yaxis={"title": "Price", "gridcolor": "#e3ebe6"},
                 )
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 

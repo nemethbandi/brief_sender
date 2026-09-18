@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from storage.momentum_database import (
-    MomentumDatabase, build_demo_previous_ranking, calendar_month_before,
+    MomentumDatabase, calendar_month_before,
     calendar_months_before, compare_rankings,
 )
 
@@ -57,15 +57,6 @@ def test_compare_rankings_prepares_future_monthly_changes() -> None:
     assert changes["rank_changes"][0] == {
         "ticker": "BBB", "previous_rank": 2, "current_rank": 1, "change": 1,
     }
-
-
-def test_demo_previous_ranking_exercises_entries_exits_without_persistence() -> None:
-    current = ranking([f"T{index:02d}" for index in range(1, 13)], list(range(12, 0, -1)))
-    demo_previous = build_demo_previous_ranking(current, n=10)
-    changes = compare_rankings(current, demo_previous, n=10)
-    assert changes["entered"] == ["T09", "T10"]
-    assert changes["exited"] == ["T11", "T12"]
-    assert any(row["change"] for row in changes["rank_changes"])
 
 
 def test_calendar_month_before_clamps_end_of_month() -> None:

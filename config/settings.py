@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,20 +19,8 @@ except ImportError:
 class AppSettings:
     recipient: str = ""
     report_title: str = "OTP Alapkezelő Morning Brief"
-    lookback_hours: int = 24
-    max_top_stories: int = 8
-    max_company_stories: int = 4
-    include_all_portfolio_news: bool = True
     chart_period: str = "3mo"
-    auto_open_outlook: bool = True
     timezone: str = "Europe/Budapest"
-    market_cache_seconds: int = 180
-    news_cache_seconds: int = 600
-    duplicate_threshold: float = 0.80
-    thresholds: dict[str, float] = field(default_factory=lambda: {
-        "equity_index": 1.0, "stock": 2.0, "fx": 0.5,
-        "commodity": 1.5, "volatility": 5.0, "rates": 1.0,
-    })
 
 
 def load_settings(path: Path | None = None) -> AppSettings:

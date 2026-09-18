@@ -41,9 +41,7 @@ class ReportBuilder:
               momentum_changes: dict | None = None,
               momentum_sector_comparison: Sequence[dict] | None = None,
               momentum_sector_3m_date: str | None = None,
-              momentum_sector_3m_demo: bool = False,
               momentum_comparison_date: str | None = None,
-              momentum_comparison_demo: bool = False,
               generated_at: datetime | None = None) -> Report:
         now = generated_at or datetime.now(ZoneInfo(self.timezone_name))
         if now.tzinfo is None:
@@ -149,9 +147,7 @@ class ReportBuilder:
             "momentum_changes": momentum_changes,
             "momentum_sector_comparison": sector_rows,
             "momentum_sector_3m_date": momentum_sector_3m_date,
-            "momentum_sector_3m_demo": momentum_sector_3m_demo,
             "momentum_comparison_date": momentum_comparison_date,
-            "momentum_comparison_demo": momentum_comparison_demo,
             "top_chart_cid": top_chart_cid,
             "worst_chart_cid": worst_chart_cid,
             "market_timestamp": self._format_timestamp(market_timestamp),

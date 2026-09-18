@@ -17,7 +17,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 MOMENTUM_DB_PATH = Path(os.getenv(
-    "MOMENTUM_DB_PATH", str(BASE_DIR / "storage" / "momentum.db"),
+    "MOMENTUM_DB_PATH", str(BASE_DIR / "storage" / "momentum_lseg.db"),
 ))
 
 
@@ -45,7 +45,7 @@ def calendar_months_before(value: date | datetime | str, months: int) -> date:
 
 class MomentumDatabase:
     def __init__(self, path: Path | str | None = None) -> None:
-        self.path = Path(path) if path else MOMENTUM_DB_PATH
+        self.path = Path(path or os.getenv("MOMENTUM_DB_PATH") or MOMENTUM_DB_PATH)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
@@ -229,7 +229,7 @@ class MomentumDatabase:
                     industry=excluded.industry,
                     updated_at=excluded.updated_at
             """, values)
-        logger.info("Upserted %d Yahoo sector/industry metadata rows", len(values))
+        logger.info("Upserted %d LSEG sector/industry metadata rows", len(values))
         return len(values)
 
 
@@ -256,23 +256,3 @@ def compare_rankings(
         "remained": remained,
         "rank_changes": rank_changes,
     }
-
-
-def build_demo_previous_ranking(
-    current_df: pd.DataFrame, n: int = 25, replacement_count: int = 2,
-) -> pd.DataFrame:
-    """Create an in-memory prior Top-N for UI/email testing; never persist it."""
-    ordered = current_df.sort_values("rank").reset_index(drop=True)
-    replacement_count = max(1, min(replacement_count, n - 1))
-    if len(ordered) < n + replacement_count:
-        return ordered.head(n).copy()
-    retained = ordered.head(n - replacement_count).copy()
-    reserves = ordered.iloc[n:n + replacement_count].copy()
-    demo = pd.concat([retained, reserves], ignore_index=True)
-    # Swap adjacent retained names so the preview also demonstrates rank changes.
-    order = list(range(len(demo)))
-    for index in range(0, min(n - replacement_count, len(order) - 1), 2):
-        order[index], order[index + 1] = order[index + 1], order[index]
-    demo = demo.iloc[order].reset_index(drop=True)
-    demo["rank"] = range(1, len(demo) + 1)
-    return demo

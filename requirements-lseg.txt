@@ -1,3 +1,0 @@
-# Install with the same Apache Airflow constraints used by the target deployment.
--r requirements-airflow.txt
-lseg-data>=2,<3

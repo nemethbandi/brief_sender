@@ -3,8 +3,7 @@ import pandas as pd
 import pytest
 
 from processing.momentum import (
-    calculate_momentum, compare_sector_distribution, download_security_metadata,
-    merge_universes,
+    calculate_momentum, compare_sector_distribution,
 )
 
 
@@ -18,12 +17,6 @@ def synthetic_prices() -> pd.DataFrame:
         "FLAT": np.full(len(steps), 100.0),
         "SHORT": np.r_[np.full(30, np.nan), np.linspace(100, 130, len(steps) - 30)],
     }, index=dates)
-
-
-def test_universes_are_normalized_merged_and_deduplicated() -> None:
-    assert merge_universes(["AAPL", "BRK.B", "AAPL"], ["MSFT", "BRK-B"]) == [
-        "AAPL", "BRK-B", "MSFT",
-    ]
 
 
 def test_momentum_formula_and_descending_ranking() -> None:
@@ -51,19 +44,6 @@ def test_insufficient_history_and_zero_volatility_are_excluded() -> None:
     ranking = calculate_momentum(synthetic_prices())
     assert "SHORT" not in set(ranking["ticker"])
     assert "FLAT" not in set(ranking["ticker"])
-
-
-def test_yahoo_sector_and_industry_metadata_is_normalized_and_fault_tolerant() -> None:
-    def info(ticker: str) -> dict:
-        if ticker == "BAD":
-            raise RuntimeError("unavailable")
-        return {"sector": "Technology", "industry": "Semiconductors"}
-
-    rows = download_security_metadata(["NVDA", "BAD"], info_getter=info, max_workers=2)
-    assert rows == [
-        {"ticker": "BAD", "sector": "Unknown", "industry": "Unknown"},
-        {"ticker": "NVDA", "sector": "Technology", "industry": "Semiconductors"},
-    ]
 
 
 def test_sector_distribution_is_100_percent_for_current_and_previous_top_25() -> None:

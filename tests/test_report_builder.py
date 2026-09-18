@@ -78,7 +78,7 @@ def test_report_contains_momentum_top_25_table() -> None:
     assert "+3.50" in report.html
 
 
-def test_report_contains_demo_monthly_momentum_changes() -> None:
+def test_report_contains_saved_monthly_momentum_changes() -> None:
     changes = {
         "entered": ["NEW1", "NEW2"],
         "exited": ["OLD1", "OLD2"],
@@ -89,10 +89,11 @@ def test_report_contains_demo_monthly_momentum_changes() -> None:
     }
     report = ReportBuilder(timezone_name="UTC").build(
         "Brief", [], momentum_changes=changes,
-        momentum_comparison_date="2026-07-26", momentum_comparison_demo=True,
+        momentum_comparison_date="2026-07-26",
     )
     assert "MOMENTUM CHANGES VS 1 MONTH AGO" in report.html
-    assert "DEMO COMPARISON" in report.html
+    assert "2026-07-26" in report.html
+    assert "DEMO COMPARISON" not in report.html
     assert "NEW1, NEW2" in report.html
     assert "OLD1, OLD2" in report.html
     assert "KEEP" in report.html

@@ -1,12 +1,12 @@
 -- Momentum-adatbazis ellenorzese (SQLite)
 --
 -- Alapertelmezett adatbazis:
---   storage/momentum.db
+--   storage/momentum_lseg.db
 --
 -- Pelda futtatas a projekt gyokerkonyvtarabol:
---   sqlite3 -header -column storage/momentum.db ".read sql/inspect_momentum_db.sql"
+--   sqlite3 -header -column storage/momentum_lseg.db ".read sql/inspect_momentum_db.sql"
 --
--- DB Browser for SQLite-ban nyisd meg a storage/momentum.db fajlt,
+-- DB Browser for SQLite-ban nyisd meg a storage/momentum_lseg.db fajlt,
 -- majd az Execute SQL fulon egyenkent futtasd a lentebbi lekerdezeseket.
 -- A fajl kizarolag olvasasi/ellenorzesi lekerdezeseket tartalmaz.
 
@@ -262,4 +262,3 @@ SELECT
 FROM momentum_rankings
 WHERE ticker = 'NVDA'
 ORDER BY as_of_date DESC;
-

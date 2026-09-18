@@ -1,7 +1,0 @@
-[
-  {"name":"SEC Press Releases","type":"rss","url":"https://www.sec.gov/news/pressreleases.rss","enabled":true,"trusted_score":15},
-  {"name":"Federal Reserve","type":"rss","url":"https://www.federalreserve.gov/feeds/press_all.xml","enabled":true,"trusted_score":15},
-  {"name":"ECB Press Releases","type":"rss","url":"https://www.ecb.europa.eu/rss/press.html","enabled":true,"trusted_score":15},
-  {"name":"Reuters Business","type":"rss","url":"https://feeds.reuters.com/reuters/businessNews","enabled":true,"trusted_score":12},
-  {"name":"Yahoo Finance","type":"rss","url":"https://finance.yahoo.com/news/rssindex","enabled":true,"trusted_score":7}
-]

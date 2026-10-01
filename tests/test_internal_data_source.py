@@ -4,7 +4,7 @@ import pandas as pd
 
 import data.internal_data_source as source
 from data.internal_data_source import (
-    MOMENTUM_PRICE_COLUMNS, PORTFOLIO_PRICE_COLUMNS, UNIVERSE_COLUMNS,
+    MOMENTUM_PRICE_COLUMNS, PORTFOLIO_PRICE_COLUMNS, PORTFOLIO_HOLDING_COLUMNS, UNIVERSE_COLUMNS,
     load_momentum_prices, load_portfolio_isins,
     load_portfolio_prices, load_sp500_universe,
 )
@@ -12,7 +12,7 @@ from data.internal_data_source import (
 
 def test_empty_internal_loader_templates_expose_the_required_contract() -> None:
     as_of = date(2026, 9, 3)
-    assert load_portfolio_isins(as_of) == []
+    assert load_portfolio_isins(as_of).columns.tolist() == PORTFOLIO_HOLDING_COLUMNS
     assert load_sp500_universe(as_of).columns.tolist() == UNIVERSE_COLUMNS
     assert load_portfolio_prices([], as_of).columns.tolist() == PORTFOLIO_PRICE_COLUMNS
     assert load_momentum_prices([], as_of).columns.tolist() == MOMENTUM_PRICE_COLUMNS
@@ -23,7 +23,10 @@ def test_unique_sql_isins_are_passed_to_portfolio_price_loader(monkeypatch) -> N
     received_isins: list[str] = []
     monkeypatch.setattr(
         source, "load_portfolio_isins",
-        lambda value: ["us5949181045", "US5949181045", ""],
+        lambda value: pd.DataFrame([
+            {"fund_id": "A", "fund_name": "Alpha", "isin": "us5949181045"},
+            {"fund_id": "A", "fund_name": "Alpha", "isin": "US5949181045"},
+        ]),
     )
     monkeypatch.setattr(
         source, "load_sp500_universe",
@@ -60,6 +63,7 @@ def test_unique_sql_isins_are_passed_to_portfolio_price_loader(monkeypatch) -> N
     rows, provider = source.build_internal_data_provider(as_of)
     assert received_isins == ["US5949181045"]
     assert rows == [{
+        "fund_id": "A", "fund_name": "Alpha",
         "isin": "US5949181045", "ticker": "MSFT", "data_id": "MSFT.O",
         "name": "Microsoft", "threshold_pct": 2.0,
     }]

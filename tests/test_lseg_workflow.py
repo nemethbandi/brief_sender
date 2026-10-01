@@ -20,7 +20,7 @@ def internal_feed(monkeypatch, tmp_path):
 
     def isins(as_of):
         calls.append("isins")
-        return ["US5949181045"]
+        return pd.DataFrame([{"fund_id": "A", "fund_name": "Alpha", "isin": "US5949181045"}])
 
     def universe(as_of):
         calls.append("universe")
@@ -84,7 +84,7 @@ def test_streamlit_refresh_and_preview_use_internal_feed(internal_feed, monkeypa
     assert app.session_state.show_preview
     assert internal_feed == ["isins", "universe", "portfolio", "momentum"]
     # A failed refresh must invalidate an older report and quotes.
-    monkeypatch.setattr(source, "load_portfolio_isins", lambda as_of: [])
+    monkeypatch.setattr(source, "load_portfolio_isins", lambda as_of: pd.DataFrame(columns=source.PORTFOLIO_HOLDING_COLUMNS))
     next(b for b in app.button if b.label == "Refresh Data").click().run()
     assert not app.exception
     assert app.error
@@ -93,7 +93,7 @@ def test_streamlit_refresh_and_preview_use_internal_feed(internal_feed, monkeypa
 
 
 def test_empty_loaders_fail_before_email(monkeypatch):
-    monkeypatch.setattr(source, "load_portfolio_isins", lambda as_of: [])
+    monkeypatch.setattr(source, "load_portfolio_isins", lambda as_of: pd.DataFrame(columns=source.PORTFOLIO_HOLDING_COLUMNS))
     monkeypatch.setattr(workflow, "deliver_report", lambda *a: pytest.fail("Must not send"))
     with pytest.raises(RuntimeError, match="load_portfolio_isins"):
         workflow.run_daily_brief("2026-09-18", to_address=["test@example.com"])

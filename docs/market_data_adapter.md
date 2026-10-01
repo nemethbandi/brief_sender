@@ -15,19 +15,28 @@ load_momentum_prices(data_ids, as_of)
 
 SQL, authentication and your internal LSEG/Datastream client belong inside
 these functions. Keep credentials in your environment or secret store.
-The first function returns a list; the remaining three return DataFrames.
+All four functions return DataFrames. The portfolio loader returns fund/ISIN
+membership; the price loader continues to receive an ordinary unique ISIN list.
 The templates are empty and deliberately fail until filled.
 
-### 1. Portfolio ISIN list
+### 1. Fund/ISIN membership
 
-The colleague-owned SQL loader returns the unique held ISINs:
+The SQL loader returns one row per investment fund and held ISIN:
 
 ```python
-["US5949181045", "US67066G1040"]
+pd.DataFrame([
+    {"fund_id": "A", "fund_name": "Alpha Fund", "isin": "US5949181045"},
+    {"fund_id": "B", "fund_name": "Beta Fund", "isin": "US5949181045"},
+    {"fund_id": "B", "fund_name": "Beta Fund", "isin": "US67066G1040"},
+])
 ```
 
 `load_portfolio_isins(as_of)` removes SQL details from the rest of the project.
-The returned ISINs are passed directly to `load_portfolio_prices()`.
+The required columns are `fund_id`, `fund_name`, `isin`. Null/blank values and
+conflicting names for one fund ID are rejected. Duplicate `(fund_id, isin)` pairs
+are removed. ISINs can repeat across funds. The application extracts unique ISINs
+and passes that list to `load_portfolio_prices()`, then joins the reference data
+back onto each fund by ISIN. Do not repeat price rows per fund.
 
 ### 2. S&P 500 universe
 

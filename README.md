@@ -9,7 +9,7 @@ Fill the four functions in `data/internal_data_source.py`:
 
 | Function | Output |
 | --- | --- |
-| `load_portfolio_isins(as_of)` | Unique held ISINs from your SQL query |
+| `load_portfolio_isins(as_of)` | DataFrame: `fund_id`, `fund_name`, `isin` from your SQL query |
 | `load_sp500_universe(as_of)` | DataFrame: `ticker`, `data_id`; optional `sector`, `industry` |
 | `load_portfolio_prices(isins, as_of)` | DataFrame: `isin`, `ticker`, `data_id`, `date`, `close`; optional `name`, `threshold_pct` |
 | `load_momentum_prices(data_ids, as_of)` | DataFrame: `data_id`, `date`, `value` |
@@ -22,6 +22,27 @@ corresponding history. See [the full contract](docs/market_data_adapter.md).
 This is the only market data source. Until the loaders are implemented,
 refreshing reports a missing-data error. Old `MARKET_DATA_PROVIDER` and `LSEG_*`
 adapter settings can be removed; the application no longer reads them.
+
+The portfolio loader now returns fund membership, not a plain ISIN list:
+
+```python
+return pd.DataFrame([
+    {"fund_id": "FUND_A", "fund_name": "Alpha Fund", "isin": "US5949181045"},
+    {"fund_id": "FUND_B", "fund_name": "Beta Fund", "isin": "US5949181045"},
+    {"fund_id": "FUND_B", "fund_name": "Beta Fund", "isin": "US67066G1040"},
+])
+```
+
+The unique key is `(fund_id, isin)`; each fund ID must have one nonempty name.
+Duplicate memberships are removed. The price loader still receives a unique
+ISIN list, so shared securities are downloaded once and included in every fund
+that holds them. Fund membership is kept in memory for the current report;
+the momentum database schema is unchanged.
+
+One email contains a separate portfolio section for every fund (notable moves,
+stop-loss, top/worst performers, charts and status), followed by one common S&P 500
+momentum section. Streamlit shows fund portfolios in separate tabs. Position counts
+are per fund, not fund returns or weight-adjusted performance.
 
 ## Test in Streamlit
 
@@ -39,7 +60,7 @@ python -m streamlit run app.py
    on Windows is needed only for opening a draft or direct Outlook sending.
 
 Refreshing and previewing do not send email. Direct sending requires confirmation.
-The portfolio comes from the SQL ISIN list; there is no separate local portfolio
+The portfolio comes from the SQL fund/ISIN table; there is no separate local portfolio
 editor. Set each security's notable-move threshold with `threshold_pct` in the
 portfolio price DataFrame (default 2%).
 

@@ -148,6 +148,18 @@ class BriefData:
     momentum: dict[str, Any]
     momentum_warning: str | None = None
 
+    @property
+    def fund_portfolios(self) -> list[dict[str, Any]]:
+        """Associate shared security quotes with every fund that holds them."""
+        quote_by_ticker = {quote.ticker: quote for quote in self.quotes}
+        funds: dict[str, dict[str, Any]] = {}
+        for row in self.portfolio_rows:
+            fund = funds.setdefault(row["fund_id"], {
+                "fund_id": row["fund_id"], "fund_name": row["fund_name"], "quotes": [],
+            })
+            fund["quotes"].append(quote_by_ticker[row["ticker"]])
+        return list(funds.values())
+
 
 def load_brief_data(
     as_of: date | datetime | str,
@@ -160,7 +172,8 @@ def load_brief_data(
     logical_datetime = normalize_as_of(as_of, settings.timezone)
     rows, provider = build_internal_data_provider(logical_datetime)
     service = MarketDataService(provider)
-    assets = portfolio_assets(rows)
+    unique_rows = list({row["isin"]: row for row in rows}.values())
+    assets = portfolio_assets(unique_rows)
     quotes = service.get_quotes(assets)
     histories = service.get_histories(assets, settings.chart_period)
     stop_histories = (
@@ -199,6 +212,7 @@ def build_report(data: BriefData, settings: AppSettings) -> Report:
         momentum_sector_3m_date=momentum["three_month_date"],
         momentum_comparison_date=momentum["one_month_date"],
         generated_at=as_of,
+        fund_portfolios=data.fund_portfolios,
     )
     if data.momentum_warning:
         report.chart_warning = " ".join(filter(None, [report.chart_warning, data.momentum_warning]))
@@ -262,7 +276,9 @@ def run_daily_brief(
     return {
         "as_of_date": logical_datetime.date().isoformat(),
         "subject": report.subject,
-        "portfolio_size": len(rows),
+        "portfolio_size": len(data.quotes),
+        "fund_count": len(data.fund_portfolios),
+        "fund_position_count": len(rows),
         "momentum_rows": len(momentum["ranking"]),
         "momentum_rows_written": momentum["rows_written"],
         "email_result": email_result,

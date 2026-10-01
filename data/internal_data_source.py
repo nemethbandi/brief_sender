@@ -15,6 +15,7 @@ import pandas as pd
 from data.dataframe_provider import DataFrameMarketDataProvider
 
 
+PORTFOLIO_HOLDING_COLUMNS = ["fund_id", "fund_name", "isin"]
 UNIVERSE_COLUMNS = ["ticker", "data_id", "sector", "industry"]
 PORTFOLIO_PRICE_COLUMNS = [
     "isin", "ticker", "data_id", "name", "threshold_pct", "date", "close",
@@ -22,16 +23,16 @@ PORTFOLIO_PRICE_COLUMNS = [
 MOMENTUM_PRICE_COLUMNS = ["data_id", "date", "value"]
 
 
-def load_portfolio_isins(as_of: date | datetime) -> list[str]:
-    """Return the unique ISINs held by the portfolio on `as_of`.
+def load_portfolio_isins(as_of: date | datetime) -> pd.DataFrame:
+    """Return fund membership on `as_of`: fund_id, fund_name, isin.
 
     This is the only function the portfolio SQL integration has to implement.
-    Remove NULL/blank values and duplicates before returning the list.
+    One row per (fund_id, isin); a security may belong to multiple funds.
     """
     # TODO: Run the colleague's internal portfolio SQL query here, for example:
     # frame = pd.read_sql(query, connection, params={"as_of": as_of})
-    # return frame["isin"].dropna().astype(str).str.strip().drop_duplicates().tolist()
-    return []
+    # return frame[["fund_id", "fund_name", "isin"]]
+    return pd.DataFrame(columns=PORTFOLIO_HOLDING_COLUMNS)
 
 
 def load_sp500_universe(as_of: date | datetime) -> pd.DataFrame:
@@ -80,17 +81,30 @@ def build_internal_data_provider(
     as_of: date | datetime,
 ) -> tuple[list[dict], DataFrameMarketDataProvider]:
     """Assemble and validate the four loader outputs for the daily workflow."""
-    raw_isins = load_portfolio_isins(as_of)
-    portfolio_isins = list(dict.fromkeys(
-        str(isin).strip().upper() for isin in raw_isins
-        if isin is not None and str(isin).strip()
-    ))
-    universe = load_sp500_universe(as_of)
-    if not portfolio_isins:
+    holdings = load_portfolio_isins(as_of)
+    if not isinstance(holdings, pd.DataFrame):
+        raise ValueError("load_portfolio_isins() must return a DataFrame with fund_id, fund_name, isin")
+    if holdings.empty:
         raise RuntimeError(
-            "Internal portfolio ISIN list is empty; implement "
+            "Internal fund/ISIN table is empty; implement "
             "load_portfolio_isins() in data/internal_data_source.py"
         )
+    missing = set(PORTFOLIO_HOLDING_COLUMNS) - set(holdings.columns)
+    if missing:
+        raise ValueError(f"Fund holdings are missing required columns: {sorted(missing)}")
+    holdings = holdings[PORTFOLIO_HOLDING_COLUMNS].copy()
+    for column in PORTFOLIO_HOLDING_COLUMNS:
+        if holdings[column].isna().any():
+            raise ValueError(f"Fund holdings contain missing {column} values")
+        holdings[column] = holdings[column].astype(str).str.strip()
+        if holdings[column].eq("").any():
+            raise ValueError(f"Fund holdings contain blank {column} values")
+    holdings["isin"] = holdings["isin"].str.upper()
+    if holdings.groupby("fund_id")["fund_name"].nunique().gt(1).any():
+        raise ValueError("Each fund_id must map to exactly one fund_name")
+    holdings = holdings.drop_duplicates(["fund_id", "isin"])
+    portfolio_isins = holdings["isin"].drop_duplicates().tolist()
+    universe = load_sp500_universe(as_of)
     if universe.empty:
         raise RuntimeError(
             "Internal S&P 500 universe DataFrame is empty; implement "
@@ -120,6 +134,7 @@ def build_internal_data_provider(
         )
     resolved = portfolio_prices.copy()
     resolved["isin"] = resolved["isin"].astype(str).str.strip().str.upper()
+    resolved = resolved[resolved["isin"].isin(portfolio_isins)].copy()
     returned_isins = set(resolved["isin"])
     missing_isins = [isin for isin in portfolio_isins if isin not in returned_isins]
     if missing_isins:
@@ -144,7 +159,8 @@ def build_internal_data_provider(
 
     provider = DataFrameMarketDataProvider(
         universe=universe,
-        portfolio_prices=portfolio_prices,
+        portfolio_prices=resolved,
         momentum_prices=momentum_prices,
     )
-    return portfolio.to_dict("records"), provider
+    fund_portfolio = holdings.merge(portfolio, on="isin", how="left", validate="many_to_one")
+    return fund_portfolio.to_dict("records"), provider

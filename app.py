@@ -112,7 +112,7 @@ def sidebar() -> None:
     settings = st.session_state.settings
     with st.sidebar:
         st.header("Portfolio")
-        st.caption("Source: internal LSEG / Datastream. Portfolio positions come from the SQL ISIN list.")
+        st.caption("Source: internal LSEG / Datastream. Fund portfolios come from the SQL fund/ISIN table.")
         if st.session_state.portfolio_rows:
             st.dataframe(pd.DataFrame(st.session_state.portfolio_rows), hide_index=True, use_container_width=True)
         else:
@@ -129,6 +129,117 @@ def sidebar() -> None:
                     chart_period=chart_period,
                     timezone=settings.timezone)
                 save_settings(st.session_state.settings); st.success("Settings saved.")
+
+
+def render_fund_portfolio(fund: dict) -> None:
+    portfolio_quotes = fund["quotes"]
+    st.subheader("Notable Portfolio Moves")
+    notable = MarketDataService.notable_portfolio_moves(portfolio_quotes)
+    if notable:
+        notable_frame = pd.DataFrame([
+            {"Ticker": q.ticker, "Company": q.name, "Last": format_price(q),
+             "Daily Change": display_change(q),
+             "Configured threshold": f"±{getattr(q, 'threshold_pct', None) or 2.0:.1f}%"}
+            for q in notable
+        ])
+        st.dataframe(style_movement_table(notable_frame, "Daily Change"), hide_index=True, use_container_width=True)
+    else:
+        st.info("No portfolio position has breached its configured notable-move threshold.")
+
+    st.markdown("#### Stop-loss monitor · drawdown from latest 6-month peak")
+    stop_signals = select_stop_loss_signals(
+        portfolio_quotes, st.session_state.portfolio_stop_history,
+    )
+    stop_candidates = [signal for signal in stop_signals if signal.status == "STOP"]
+    watch_candidates = [signal for signal in stop_signals if signal.status == "WATCH"]
+    stop_col, watch_col = st.columns(2)
+
+    def signal_frame(signals):
+        return pd.DataFrame([{
+            "Ticker": signal.quote.ticker,
+            "Company": signal.quote.name,
+            "Last": f"${signal.current_price:,.2f}",
+            "6M Peak": f"${signal.peak_price:,.2f}",
+            "Peak date": signal.peak_date.strftime("%Y-%m-%d"),
+            "Drawdown": f"-{signal.drawdown_pct:.2f}%",
+        } for signal in signals])
+
+    with stop_col:
+        st.markdown("##### 🔴 STOP (−15% or worse)")
+        if stop_candidates:
+            st.dataframe(signal_frame(stop_candidates), hide_index=True, use_container_width=True)
+        else:
+            st.success("No position has reached the 15% stop-loss level.")
+    with watch_col:
+        st.markdown("##### 🟠 WATCH LIST (−10% to −15%)")
+        if watch_candidates:
+            st.dataframe(signal_frame(watch_candidates), hide_index=True, use_container_width=True)
+        else:
+            st.info("No position is currently in the 10–15% watch zone.")
+
+    st.subheader("Top & Worst Performers")
+    top_performers, worst_performers = select_portfolio_performers(portfolio_quotes)
+    best_col, worst_col = st.columns(2)
+    with best_col:
+        st.markdown("#### Top Performers")
+        top_frame = pd.DataFrame([
+            {"Ticker": q.ticker, "Company": q.name, "Last": format_price(q),
+             "Daily Change": display_change(q)} for q in top_performers
+        ])
+        st.dataframe(style_movement_table(top_frame, "Daily Change"), hide_index=True, use_container_width=True)
+    with worst_col:
+        st.markdown("#### Worst Performers")
+        worst_frame = pd.DataFrame([
+            {"Ticker": q.ticker, "Company": q.name, "Last": format_price(q),
+             "Daily Change": display_change(q)} for q in worst_performers
+        ])
+        st.dataframe(style_movement_table(worst_frame, "Daily Change"), hide_index=True, use_container_width=True)
+
+
+    st.subheader("Portfolio Status")
+    st.caption("Latest price and daily move for enabled portfolio securities")
+    available = [q for q in portfolio_quotes if q.percentage_change is not None]
+    up_count = sum(1 for q in available if (q.percentage_change or 0) > 0)
+    down_count = sum(1 for q in available if (q.percentage_change or 0) < 0)
+    unchanged_count = sum(1 for q in available if q.percentage_change == 0)
+    unavailable_count = len(portfolio_quotes) - len(available)
+    pc1, pc2, pc3, pc4, pc5 = st.columns(5)
+    pc1.markdown(f'<div class="status-card"><span>POSITIONS</span><strong>{len(portfolio_quotes)}</strong></div>', unsafe_allow_html=True)
+    pc2.markdown(f'<div class="status-card positive"><span>UP</span><strong>▲ {up_count}</strong></div>', unsafe_allow_html=True)
+    pc3.markdown(f'<div class="status-card negative"><span>DOWN</span><strong>▼ {down_count}</strong></div>', unsafe_allow_html=True)
+    pc4.markdown(f'<div class="status-card"><span>UNCHANGED</span><strong>• {unchanged_count}</strong></div>', unsafe_allow_html=True)
+    pc5.markdown(f'<div class="status-card"><span>N/A</span><strong>{unavailable_count}</strong></div>', unsafe_allow_html=True)
+    portfolio_frame = pd.DataFrame([
+        {"Ticker": q.ticker, "Company": q.name, "Last": format_price(q),
+         "Daily Change": display_change(q), "Notable at": f"±{getattr(q, 'threshold_pct', None) or 2.0:.1f}%",
+         "Status": q.error or "Available"}
+        for q in portfolio_quotes
+    ])
+    st.dataframe(style_movement_table(portfolio_frame, "Daily Change"), hide_index=True, use_container_width=True)
+
+    st.subheader("Historical Price Charts")
+    st.caption(f"Daily closing prices · {getattr(st.session_state.settings, 'chart_period', '3mo')}")
+    history_tabs = st.tabs([quote.ticker for quote in portfolio_quotes])
+    for tab, quote in zip(history_tabs, portfolio_quotes):
+        with tab:
+            history = st.session_state.portfolio_history.get(quote.ticker)
+            if history is None or history.empty:
+                st.warning(f"No historical price data is available for {quote.ticker}.")
+                continue
+            fig = go.Figure(go.Scatter(
+                x=history["Date"], y=history["Price"], mode="lines",
+                line={"color": "#3a7059", "width": 2.5},
+                hovertemplate="%{x|%Y-%m-%d}<br>Price: %{y:,.2f}<extra></extra>",
+            ))
+            fig.update_layout(
+                height=360, margin={"l": 10, "r": 10, "t": 35, "b": 10},
+                title={"text": f"{quote.ticker} · {quote.name}", "font": {"size": 16, "color": "#3a7059"}},
+                paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", hovermode="x unified",
+                xaxis={"title": None, "showgrid": False, "rangeslider": {"visible": False}},
+                yaxis={"title": "Price", "gridcolor": "#e3ebe6"},
+            )
+            st.plotly_chart(fig, key=f"fund_chart_{fund['fund_id']}_{quote.ticker}", use_container_width=True, config={"displayModeBar": False})
+
 
 
 def main() -> None:
@@ -154,69 +265,11 @@ def main() -> None:
     if c4.button("Send Email", use_container_width=True, disabled=st.session_state.report is None): st.session_state.confirm_send = True
     sidebar()
     if st.session_state.portfolio_quotes:
-        portfolio_quotes = st.session_state.portfolio_quotes
-
-        st.subheader("Notable Portfolio Moves")
-        notable = MarketDataService.notable_portfolio_moves(portfolio_quotes)
-        if notable:
-            notable_frame = pd.DataFrame([
-                {"Ticker": q.ticker, "Company": q.name, "Last": format_price(q),
-                 "Daily Change": display_change(q),
-                 "Configured threshold": f"±{getattr(q, 'threshold_pct', None) or 2.0:.1f}%"}
-                for q in notable
-            ])
-            st.dataframe(style_movement_table(notable_frame, "Daily Change"), hide_index=True, use_container_width=True)
-        else:
-            st.info("No portfolio position has breached its configured notable-move threshold.")
-
-        st.markdown("#### Stop-loss monitor · drawdown from latest 6-month peak")
-        stop_signals = select_stop_loss_signals(
-            portfolio_quotes, st.session_state.portfolio_stop_history,
-        )
-        stop_candidates = [signal for signal in stop_signals if signal.status == "STOP"]
-        watch_candidates = [signal for signal in stop_signals if signal.status == "WATCH"]
-        stop_col, watch_col = st.columns(2)
-
-        def signal_frame(signals):
-            return pd.DataFrame([{
-                "Ticker": signal.quote.ticker,
-                "Company": signal.quote.name,
-                "Last": f"${signal.current_price:,.2f}",
-                "6M Peak": f"${signal.peak_price:,.2f}",
-                "Peak date": signal.peak_date.strftime("%Y-%m-%d"),
-                "Drawdown": f"-{signal.drawdown_pct:.2f}%",
-            } for signal in signals])
-
-        with stop_col:
-            st.markdown("##### 🔴 STOP (−15% or worse)")
-            if stop_candidates:
-                st.dataframe(signal_frame(stop_candidates), hide_index=True, use_container_width=True)
-            else:
-                st.success("No position has reached the 15% stop-loss level.")
-        with watch_col:
-            st.markdown("##### 🟠 WATCH LIST (−10% to −15%)")
-            if watch_candidates:
-                st.dataframe(signal_frame(watch_candidates), hide_index=True, use_container_width=True)
-            else:
-                st.info("No position is currently in the 10–15% watch zone.")
-
-        st.subheader("Top & Worst Performers")
-        top_performers, worst_performers = select_portfolio_performers(portfolio_quotes)
-        best_col, worst_col = st.columns(2)
-        with best_col:
-            st.markdown("#### Top Performers")
-            top_frame = pd.DataFrame([
-                {"Ticker": q.ticker, "Company": q.name, "Last": format_price(q),
-                 "Daily Change": display_change(q)} for q in top_performers
-            ])
-            st.dataframe(style_movement_table(top_frame, "Daily Change"), hide_index=True, use_container_width=True)
-        with worst_col:
-            st.markdown("#### Worst Performers")
-            worst_frame = pd.DataFrame([
-                {"Ticker": q.ticker, "Company": q.name, "Last": format_price(q),
-                 "Daily Change": display_change(q)} for q in worst_performers
-            ])
-            st.dataframe(style_movement_table(worst_frame, "Daily Change"), hide_index=True, use_container_width=True)
+        funds = st.session_state.brief_data.fund_portfolios
+        fund_tabs = st.tabs([f"{fund['fund_name']} ({fund['fund_id']})" for fund in funds])
+        for tab, fund in zip(fund_tabs, funds):
+            with tab:
+                render_fund_portfolio(fund)
 
         st.subheader("Momentum Top 25")
         if st.session_state.momentum_warning:
@@ -305,50 +358,6 @@ def main() -> None:
                 } for row in sector_rows]), hide_index=True, use_container_width=True)
         elif not st.session_state.momentum_warning:
             st.info("Refresh Data to calculate the momentum ranking.")
-
-        st.subheader("Portfolio Status")
-        st.caption("Latest price and daily move for enabled portfolio securities")
-        available = [q for q in portfolio_quotes if q.percentage_change is not None]
-        up_count = sum(1 for q in available if (q.percentage_change or 0) > 0)
-        down_count = sum(1 for q in available if (q.percentage_change or 0) < 0)
-        unchanged_count = sum(1 for q in available if q.percentage_change == 0)
-        unavailable_count = len(portfolio_quotes) - len(available)
-        pc1, pc2, pc3, pc4, pc5 = st.columns(5)
-        pc1.markdown(f'<div class="status-card"><span>POSITIONS</span><strong>{len(portfolio_quotes)}</strong></div>', unsafe_allow_html=True)
-        pc2.markdown(f'<div class="status-card positive"><span>UP</span><strong>▲ {up_count}</strong></div>', unsafe_allow_html=True)
-        pc3.markdown(f'<div class="status-card negative"><span>DOWN</span><strong>▼ {down_count}</strong></div>', unsafe_allow_html=True)
-        pc4.markdown(f'<div class="status-card"><span>UNCHANGED</span><strong>• {unchanged_count}</strong></div>', unsafe_allow_html=True)
-        pc5.markdown(f'<div class="status-card"><span>N/A</span><strong>{unavailable_count}</strong></div>', unsafe_allow_html=True)
-        portfolio_frame = pd.DataFrame([
-            {"Ticker": q.ticker, "Company": q.name, "Last": format_price(q),
-             "Daily Change": display_change(q), "Notable at": f"±{getattr(q, 'threshold_pct', None) or 2.0:.1f}%",
-             "Status": q.error or "Available"}
-            for q in portfolio_quotes
-        ])
-        st.dataframe(style_movement_table(portfolio_frame, "Daily Change"), hide_index=True, use_container_width=True)
-
-        st.subheader("Historical Price Charts")
-        st.caption(f"Daily closing prices · {getattr(st.session_state.settings, 'chart_period', '3mo')}")
-        history_tabs = st.tabs([quote.ticker for quote in portfolio_quotes])
-        for tab, quote in zip(history_tabs, portfolio_quotes):
-            with tab:
-                history = st.session_state.portfolio_history.get(quote.ticker)
-                if history is None or history.empty:
-                    st.warning(f"No historical price data is available for {quote.ticker}.")
-                    continue
-                fig = go.Figure(go.Scatter(
-                    x=history["Date"], y=history["Price"], mode="lines",
-                    line={"color": "#3a7059", "width": 2.5},
-                    hovertemplate="%{x|%Y-%m-%d}<br>Price: %{y:,.2f}<extra></extra>",
-                ))
-                fig.update_layout(
-                    height=360, margin={"l": 10, "r": 10, "t": 35, "b": 10},
-                    title={"text": f"{quote.ticker} · {quote.name}", "font": {"size": 16, "color": "#3a7059"}},
-                    paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", hovermode="x unified",
-                    xaxis={"title": None, "showgrid": False, "rangeslider": {"visible": False}},
-                    yaxis={"title": "Price", "gridcolor": "#e3ebe6"},
-                )
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     report = st.session_state.report
     if report:

@@ -84,7 +84,7 @@ class ReportBuilder:
         groups = fund_portfolios if fund_portfolios is not None else [{
             "fund_id": None, "fund_name": None, "quotes": portfolio_quotes or [],
         }]
-        for fund in groups:
+        for section_number, fund in enumerate(groups, start=1):
             quotes = fund["quotes"]
             fund_notable = MarketDataService.notable_portfolio_moves(quotes) if fund_portfolios is not None else notable
             prefix = ""
@@ -93,7 +93,10 @@ class ReportBuilder:
             section, images, warnings = self._portfolio_context(
                 quotes, fund_notable, portfolio_history, stop_loss_history, now, prefix,
             )
-            section.update(fund_id=fund["fund_id"], fund_name=fund["fund_name"])
+            section.update(
+                fund_id=fund["fund_id"], fund_name=fund["fund_name"],
+                anchor_id=f"brief_portfolio_{section_number}",
+            )
             portfolio_sections.append(section)
             inline_images.extend(images)
             chart_warnings.extend(warnings)

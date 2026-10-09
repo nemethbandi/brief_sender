@@ -55,7 +55,7 @@ def test_shared_isin_fetched_once_and_included_in_each_fund(fund_feed):
     ]
     report = build_report(data, AppSettings())
     assert "Alpha &lt;Fund&gt;" in report.html
-    alpha, beta = report.html.split("Alpha &lt;Fund&gt;", 1)[1].split("Beta Fund", 1)
+    alpha, beta = report.html.split('name="brief_portfolio_1"', 1)[1].split('name="brief_portfolio_2"', 1)
     assert "ONE" in alpha and "TWO" not in alpha
     assert "ONE" in beta and "TWO" in beta
     assert report.html.count("PORTFOLIO STATUS") == 2

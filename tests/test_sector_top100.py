@@ -46,13 +46,13 @@ def test_sector_aliases_are_grouped_and_unknown_names_are_colored():
     assert sum(r["current_pct"] for r in rows) == pytest.approx(100)
 
 
-def test_workflow_enriches_top100_and_repairs_unknown_historical_sectors(monkeypatch, tmp_path):
+def test_workflow_enriches_top100_and_repairs_unknown_historical_sectors(monkeypatch, storage_engine):
     ranking = frame(["Unknown"] * 110)
     for column in momentum.RANKING_COLUMNS:
         if column not in ranking:
             ranking[column] = 1.0
     ranking = ranking.drop(columns="sector")
-    database = MomentumDatabase(tmp_path / "momentum.db")
+    database = MomentumDatabase(engine=storage_engine)
     old = ranking.copy()
     old["sector"] = "Unknown"
     database.upsert_rankings("2026-08-18", old)

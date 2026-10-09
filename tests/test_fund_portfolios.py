@@ -12,7 +12,7 @@ from workflows import daily_brief as workflow
 
 
 @pytest.fixture
-def fund_feed(monkeypatch, tmp_path):
+def fund_feed(monkeypatch, tmp_path, storage_engine):
     holdings = pd.DataFrame([
         {"fund_id": "A", "fund_name": "Alpha <Fund>", "isin": "ISIN1"},
         {"fund_id": "B", "fund_name": "Beta Fund", "isin": "ISIN1"},
@@ -20,7 +20,8 @@ def fund_feed(monkeypatch, tmp_path):
         {"fund_id": "B", "fund_name": "Beta Fund", "isin": "ISIN2"},
     ])
     monkeypatch.setattr(source, "load_portfolio_isins", lambda as_of: holdings.copy())
-    monkeypatch.setenv("MOMENTUM_DB_PATH", str(tmp_path / "momentum.db"))
+    monkeypatch.setattr("storage.mssql.create_storage_engine", lambda: storage_engine)
+    monkeypatch.setattr(storage_engine, "dispose", lambda: None)
     monkeypatch.setattr(source, "load_sp500_universe", lambda as_of: pd.DataFrame([
         {"ticker": "ONE", "data_id": "ONE.RIC", "sector": "Technology"},
         {"ticker": "TWO", "data_id": "TWO.RIC", "sector": "Energy"},

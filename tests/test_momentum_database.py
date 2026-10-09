@@ -23,11 +23,9 @@ def ranking(tickers: list[str], scores: list[float]) -> pd.DataFrame:
     })
 
 
-def test_database_initialization_and_idempotent_upsert(tmp_path: Path) -> None:
-    path = tmp_path / "nested" / "momentum.db"
-    db = MomentumDatabase(path)
+def test_database_initialization_and_idempotent_upsert(storage_engine) -> None:
+    db = MomentumDatabase(engine=storage_engine)
     first = ranking(["AAA", "BBB", "CCC"], [3.0, 2.0, 1.0])
-    assert path.exists()
     assert db.upsert_rankings(date(2026, 8, 24), first) == 3
     updated = ranking(["BBB", "AAA"], [4.0, 3.0])
     assert db.upsert_rankings(date(2026, 8, 24), updated) == 2
@@ -37,8 +35,8 @@ def test_database_initialization_and_idempotent_upsert(tmp_path: Path) -> None:
     assert stored.iloc[0]["momentum_score"] == 4.0
 
 
-def test_top_n_and_latest_on_or_before_handle_missing_dates(tmp_path: Path) -> None:
-    db = MomentumDatabase(tmp_path / "momentum.db")
+def test_top_n_and_latest_on_or_before_handle_missing_dates(storage_engine) -> None:
+    db = MomentumDatabase(engine=storage_engine)
     db.upsert_rankings("2026-08-21", ranking(["FRI1", "FRI2", "FRI3"], [3, 2, 1]))
     db.upsert_rankings("2026-08-24", ranking(["MON1", "MON2", "MON3"], [3, 2, 1]))
     assert db.get_top_n_for_date("2026-08-24", 2)["ticker"].tolist() == ["MON1", "MON2"]
@@ -65,8 +63,8 @@ def test_calendar_month_before_clamps_end_of_month() -> None:
     assert calendar_months_before("2026-05-31", 3) == date(2026, 2, 28)
 
 
-def test_security_metadata_is_cached_and_ranking_snapshot_keeps_classification(tmp_path: Path) -> None:
-    db = MomentumDatabase(tmp_path / "momentum.db")
+def test_security_metadata_is_cached_and_ranking_snapshot_keeps_classification(storage_engine) -> None:
+    db = MomentumDatabase(engine=storage_engine)
     assert db.metadata_tickers_to_refresh(["NVDA"]) == ["NVDA"]
     assert db.upsert_security_metadata([{
         "ticker": "NVDA", "sector": "Technology", "industry": "Semiconductors",

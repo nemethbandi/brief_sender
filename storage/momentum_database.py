@@ -1,24 +1,16 @@
 from __future__ import annotations
 
-import os
-import sqlite3
 from calendar import monthrange
-from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
-from typing import Iterator
 
 import pandas as pd
+from sqlalchemy import bindparam, delete, func, insert, select, update
 
-from config.settings import BASE_DIR
 from processing.momentum import RANKING_COLUMNS
+from storage.mssql import MSSQLStorage, rankings, security_metadata
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-MOMENTUM_DB_PATH = Path(os.getenv(
-    "MOMENTUM_DB_PATH", str(BASE_DIR / "storage" / "momentum_lseg.db"),
-))
 
 
 def _date_text(value: date | datetime | str) -> str:
@@ -43,153 +35,98 @@ def calendar_months_before(value: date | datetime | str, months: int) -> date:
     return date(year, month, min(current.day, monthrange(year, month)[1]))
 
 
-class MomentumDatabase:
-    def __init__(self, path: Path | str | None = None) -> None:
-        self.path = Path(path or os.getenv("MOMENTUM_DB_PATH") or MOMENTUM_DB_PATH)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.initialize()
-
-    @contextmanager
-    def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=15)
-        connection.row_factory = sqlite3.Row
-        try:
-            yield connection
-            connection.commit()
-        finally:
-            connection.close()
-
-    def initialize(self) -> None:
-        with self.connection() as con:
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS momentum_rankings (
-                    as_of_date TEXT NOT NULL,
-                    ticker TEXT NOT NULL,
-                    rank INTEGER NOT NULL,
-                    return_6m REAL,
-                    return_12m REAL,
-                    vol_6m REAL,
-                    vol_12m REAL,
-                    score_6m REAL,
-                    score_12m REAL,
-                    momentum_score REAL NOT NULL,
-                    sector TEXT,
-                    industry TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (as_of_date, ticker)
-                )
-            """)
-            con.execute(
-                "CREATE INDEX IF NOT EXISTS idx_momentum_date_rank "
-                "ON momentum_rankings(as_of_date, rank)"
-            )
-            columns = {row["name"] for row in con.execute(
-                "PRAGMA table_info(momentum_rankings)"
-            ).fetchall()}
-            if "sector" not in columns:
-                con.execute("ALTER TABLE momentum_rankings ADD COLUMN sector TEXT")
-            if "industry" not in columns:
-                con.execute("ALTER TABLE momentum_rankings ADD COLUMN industry TEXT")
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS security_metadata (
-                    ticker TEXT PRIMARY KEY,
-                    sector TEXT NOT NULL DEFAULT 'Unknown',
-                    industry TEXT NOT NULL DEFAULT 'Unknown',
-                    updated_at TEXT NOT NULL
-                )
-            """)
-
-    def upsert_rankings(
-        self, as_of_date: date | datetime | str, ranking: pd.DataFrame,
-    ) -> int:
+class MomentumDatabase(MSSQLStorage):
+    def upsert_rankings(self, as_of_date, ranking: pd.DataFrame) -> int:
         if ranking is None or ranking.empty:
             logger.warning("No momentum rows to persist for %s", _date_text(as_of_date))
             return 0
         missing = set(RANKING_COLUMNS) - set(ranking.columns)
         if missing:
             raise ValueError(f"Momentum ranking is missing columns: {sorted(missing)}")
-        day = _date_text(as_of_date)
-        def optional_text(value: object) -> str | None:
-            return None if value is None or pd.isna(value) else str(value)
-
-        rows = [(
-            day, str(row["ticker"]), int(row["rank"]), float(row["return_6m"]),
-            float(row["return_12m"]), float(row["vol_6m"]), float(row["vol_12m"]),
-            float(row["score_6m"]), float(row["score_12m"]), float(row["momentum_score"]),
-            optional_text(row.get("sector")), optional_text(row.get("industry")),
-        ) for _, row in ranking.iterrows()]
+        if ranking["ticker"].isna().any() or ranking["ticker"].astype(str).duplicated().any():
+            raise ValueError("Momentum tickers must be non-null and unique")
+        day = date.fromisoformat(_date_text(as_of_date))
+        rows = []
+        for _, row in ranking.iterrows():
+            record = {"as_of_date": day, "ticker": str(row["ticker"]), "rank": int(row["rank"])}
+            for field in RANKING_COLUMNS:
+                if field not in ("ticker", "rank"):
+                    record[field] = None if pd.isna(row[field]) else float(row[field])
+            for field in ("sector", "industry"):
+                value = row.get(field)
+                record[field] = None if value is None or pd.isna(value) else str(value)
+            rows.append(record)
         with self.connection() as con:
-            con.executemany("""
-                INSERT INTO momentum_rankings(
-                    as_of_date,ticker,rank,return_6m,return_12m,vol_6m,vol_12m,
-                    score_6m,score_12m,momentum_score,sector,industry
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(as_of_date,ticker) DO UPDATE SET
-                    rank=excluded.rank,
-                    return_6m=excluded.return_6m,
-                    return_12m=excluded.return_12m,
-                    vol_6m=excluded.vol_6m,
-                    vol_12m=excluded.vol_12m,
-                    score_6m=excluded.score_6m,
-                    score_12m=excluded.score_12m,
-                    momentum_score=excluded.momentum_score,
-                    sector=COALESCE(excluded.sector,momentum_rankings.sector),
-                    industry=COALESCE(excluded.industry,momentum_rankings.industry)
-            """, rows)
-            placeholders = ",".join("?" for _ in rows)
-            con.execute(
-                f"DELETE FROM momentum_rankings WHERE as_of_date=? "
-                f"AND ticker NOT IN ({placeholders})",
-                (day, *(row[1] for row in rows)),
-            )
+            self.lock_write(con, f"brief:dbo.momentum_rankings:{day.isoformat()}")
+            existing = set(con.execute(select(rankings.c.ticker).where(
+                rankings.c.as_of_date == day,
+            )).scalars())
+            incoming = {row["ticker"] for row in rows}
+            stale = existing - incoming
+            if stale:
+                con.execute(delete(rankings).where(
+                    rankings.c.as_of_date == day,
+                    rankings.c.ticker == bindparam("key_ticker"),
+                ), [{"key_ticker": ticker} for ticker in sorted(stale)])
+            new = [row for row in rows if row["ticker"] not in existing]
+            changed = [row for row in rows if row["ticker"] in existing]
+            if new:
+                con.execute(insert(rankings), new)
+            if changed:
+                fields = [*RANKING_COLUMNS, "sector", "industry"]
+                values = {field: bindparam("value_" + field) for field in fields if field != "ticker"}
+                for field in ("sector", "industry"):
+                    values[field] = func.coalesce(bindparam("value_" + field), rankings.c[field])
+                con.execute(update(rankings).where(
+                    rankings.c.as_of_date == day,
+                    rankings.c.ticker == bindparam("key_ticker"),
+                ).values(**values), [
+                    {"key_ticker": row["ticker"], **{
+                        "value_" + field: row[field] for field in fields if field != "ticker"
+                    }} for row in changed
+                ])
         logger.info("Upserted %d momentum ranking rows for %s", len(rows), day)
         return len(rows)
 
-    def get_ranking_for_date(
-        self, as_of_date: date | datetime | str,
-    ) -> pd.DataFrame:
-        day = _date_text(as_of_date)
+    def get_ranking_for_date(self, as_of_date) -> pd.DataFrame:
+        columns = ["as_of_date", *RANKING_COLUMNS, "sector", "industry"]
         with self.connection() as con:
-            rows = con.execute(
-                "SELECT as_of_date,ticker,rank,return_6m,return_12m,vol_6m,vol_12m,"
-                "score_6m,score_12m,momentum_score,sector,industry FROM momentum_rankings "
-                "WHERE as_of_date=? ORDER BY rank", (day,),
-            ).fetchall()
-        return pd.DataFrame(
-            [dict(row) for row in rows],
-            columns=["as_of_date", *RANKING_COLUMNS, "sector", "industry"],
-        )
+            rows = con.execute(select(*(rankings.c[c] for c in columns)).where(
+                rankings.c.as_of_date == date.fromisoformat(_date_text(as_of_date)),
+            ).order_by(rankings.c.rank)).mappings().all()
+        frame = pd.DataFrame(rows, columns=columns)
+        frame["as_of_date"] = frame["as_of_date"].map(_date_text)
+        return frame
 
-    def get_top_n_for_date(
-        self, as_of_date: date | datetime | str, n: int = 25,
-    ) -> pd.DataFrame:
+    def get_top_n_for_date(self, as_of_date, n: int = 25) -> pd.DataFrame:
         ranking = self.get_ranking_for_date(as_of_date)
         return ranking.loc[ranking["rank"] <= int(n)].reset_index(drop=True)
 
-    def get_latest_ranking_on_or_before(
-        self, target_date: date | datetime | str,
-    ) -> pd.DataFrame:
-        target = _date_text(target_date)
+    def get_latest_ranking_on_or_before(self, target_date) -> pd.DataFrame:
         with self.connection() as con:
-            row = con.execute(
-                "SELECT MAX(as_of_date) AS as_of_date FROM momentum_rankings "
-                "WHERE as_of_date<=?", (target,),
-            ).fetchone()
-        if row is None or row["as_of_date"] is None:
+            day = con.execute(select(func.max(rankings.c.as_of_date)).where(
+                rankings.c.as_of_date <= date.fromisoformat(_date_text(target_date)),
+            )).scalar_one()
+        if day is None:
             return pd.DataFrame(columns=["as_of_date", *RANKING_COLUMNS, "sector", "industry"])
-        return self.get_ranking_for_date(row["as_of_date"])
+        return self.get_ranking_for_date(day)
 
     def get_security_metadata(self, tickers: list[str]) -> dict[str, dict[str, str]]:
         symbols = sorted(set(tickers))
         if not symbols:
             return {}
-        placeholders = ",".join("?" for _ in symbols)
+        result = {}
         with self.connection() as con:
-            rows = con.execute(
-                f"SELECT ticker,sector,industry,updated_at FROM security_metadata "
-                f"WHERE ticker IN ({placeholders})", symbols,
-            ).fetchall()
-        return {row["ticker"]: dict(row) for row in rows}
+            # Keep well below SQL Server's parameter limit, even for large universes.
+            for start in range(0, len(symbols), 500):
+                rows = con.execute(select(security_metadata).where(
+                    security_metadata.c.ticker.in_(symbols[start:start + 500]),
+                )).mappings()
+                for row in rows:
+                    item = dict(row)
+                    item["updated_at"] = item["updated_at"].isoformat()
+                    result[item["ticker"]] = item
+        return result
 
     def metadata_tickers_to_refresh(
         self, tickers: list[str], max_age_days: int = 30,
@@ -215,22 +152,34 @@ class MomentumDatabase:
     def upsert_security_metadata(self, rows: list[dict[str, str]]) -> int:
         if not rows:
             return 0
-        updated_at = datetime.now(timezone.utc).isoformat()
-        values = [(
-            str(row["ticker"]), str(row.get("sector") or "Unknown"),
-            str(row.get("industry") or "Unknown"), updated_at,
-        ) for row in rows]
+        updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        # Last value wins when the provider repeats a ticker.
+        records = {str(row["ticker"]): {
+            "ticker": str(row["ticker"]), "sector": str(row.get("sector") or "Unknown"),
+            "industry": str(row.get("industry") or "Unknown"), "updated_at": updated_at,
+        } for row in rows}
         with self.connection() as con:
-            con.executemany("""
-                INSERT INTO security_metadata(ticker,sector,industry,updated_at)
-                VALUES (?,?,?,?)
-                ON CONFLICT(ticker) DO UPDATE SET
-                    sector=excluded.sector,
-                    industry=excluded.industry,
-                    updated_at=excluded.updated_at
-            """, values)
-        logger.info("Upserted %d LSEG sector/industry metadata rows", len(values))
-        return len(values)
+            self.lock_write(con, "brief:dbo.security_metadata")
+            existing = set()
+            symbols = list(records)
+            for start in range(0, len(symbols), 500):
+                existing.update(con.execute(select(security_metadata.c.ticker).where(
+                    security_metadata.c.ticker.in_(symbols[start:start + 500]),
+                )).scalars())
+            new = [row for ticker, row in records.items() if ticker not in existing]
+            changed = [row for ticker, row in records.items() if ticker in existing]
+            if new:
+                con.execute(insert(security_metadata), new)
+            if changed:
+                con.execute(update(security_metadata).where(
+                    security_metadata.c.ticker == bindparam("key_ticker"),
+                ).values(sector=bindparam("value_sector"), industry=bindparam("value_industry"),
+                         updated_at=bindparam("value_updated_at")), [{
+                    "key_ticker": row["ticker"], "value_sector": row["sector"],
+                    "value_industry": row["industry"], "value_updated_at": row["updated_at"],
+                } for row in changed])
+        logger.info("Upserted %d LSEG sector/industry metadata rows", len(records))
+        return len(records)
 
 
 def compare_rankings(

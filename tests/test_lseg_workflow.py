@@ -11,11 +11,12 @@ from workflows import daily_brief as workflow
 
 
 @pytest.fixture
-def internal_feed(monkeypatch, tmp_path):
+def internal_feed(monkeypatch, tmp_path, storage_engine):
     calls = []
     dates = pd.bdate_range(end="2026-09-18", periods=300)
     values = 100 * np.exp(np.arange(300) * .001 + .02 * np.sin(np.arange(300)))
-    monkeypatch.setenv("MOMENTUM_DB_PATH", str(tmp_path / "momentum.db"))
+    monkeypatch.setattr("storage.mssql.create_storage_engine", lambda: storage_engine)
+    monkeypatch.setattr(storage_engine, "dispose", lambda: None)
     monkeypatch.setenv("MARKET_DATA_PROVIDER", "yahoo")  # Obsolete settings must not select another source.
 
     def isins(as_of):
@@ -43,7 +44,7 @@ def internal_feed(monkeypatch, tmp_path):
     return calls
 
 
-def test_shared_load_uses_only_internal_feed(internal_feed, tmp_path):
+def test_shared_load_uses_only_internal_feed(internal_feed, storage_engine):
     data = workflow.load_brief_data(date(2026, 9, 18), AppSettings())
     assert internal_feed == ["isins", "universe", "portfolio", "momentum"]
     assert data.portfolio_rows[0]["data_id"] == "MSFT.O"
@@ -53,7 +54,9 @@ def test_shared_load_uses_only_internal_feed(internal_feed, tmp_path):
     assert data.momentum["changes"] is None  # No generated historical market data.
     assert data.momentum["one_month_date"] is None
     assert data.momentum["three_month_date"] is None
-    assert (tmp_path / "momentum.db").exists()
+    from storage.momentum_database import MomentumDatabase
+    stored = MomentumDatabase(engine=storage_engine).get_ranking_for_date("2026-09-18")
+    assert stored["ticker"].tolist() == ["MSFT"]
 
 
 def test_airflow_workflow_uses_internal_feed_and_explicit_recipient(internal_feed, monkeypatch):

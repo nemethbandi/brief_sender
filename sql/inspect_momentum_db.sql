@@ -1,43 +1,12 @@
--- Momentum-adatbazis ellenorzese (SQLite)
---
--- Alapertelmezett adatbazis:
---   storage/momentum_lseg.db
---
--- Pelda futtatas a projekt gyokerkonyvtarabol:
---   sqlite3 -header -column storage/momentum_lseg.db ".read sql/inspect_momentum_db.sql"
---
--- DB Browser for SQLite-ban nyisd meg a storage/momentum_lseg.db fajlt,
--- majd az Execute SQL fulon egyenkent futtasd a lentebbi lekerdezeseket.
--- A fajl kizarolag olvasasi/ellenorzesi lekerdezeseket tartalmaz.
+-- MSSQL read-only inspection. Select the configured Analyst_TEST2_Airflow
+-- database in SSMS before running. STRING_AGG requires SQL Server 2017+.
+SELECT DB_NAME() AS database_name, SYSUTCDATETIME() AS checked_at_utc;
 
-
--- 1. Adatbazis fajl es SQLite-verzio
-SELECT
-    sqlite_version() AS sqlite_version,
-    datetime('now') AS checked_at_utc;
-
-
--- 2. Adatbazis integritasellenorzese. Az elvart eredmeny: ok
-PRAGMA integrity_check;
-
-
--- 3. Tablak es indexek
-SELECT
-    type,
-    name,
-    tbl_name
-FROM sqlite_master
-WHERE type IN ('table', 'index')
-ORDER BY type, name;
-
-
--- 4. A momentumtabla oszlopai
-PRAGMA table_info(momentum_rankings);
-
-
--- 5. A metadata tabla oszlopai
-PRAGMA table_info(security_metadata);
-
+SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'dbo'
+  AND TABLE_NAME IN ('momentum_rankings', 'security_metadata', 'sent_reports')
+ORDER BY TABLE_NAME, ORDINAL_POSITION;
 
 -- 6. Osszes momentumrekord, ticker es elmentett nap
 SELECT
@@ -46,7 +15,7 @@ SELECT
     COUNT(DISTINCT as_of_date) AS saved_dates,
     MIN(as_of_date) AS first_saved_date,
     MAX(as_of_date) AS latest_saved_date
-FROM momentum_rankings;
+FROM dbo.momentum_rankings;
 
 
 -- 7. Naponta hany momentumrekord van elmentve?
@@ -57,7 +26,7 @@ SELECT
     MIN(rank) AS best_rank,
     MAX(rank) AS worst_rank,
     COUNT(DISTINCT ticker) AS distinct_tickers
-FROM momentum_rankings
+FROM dbo.momentum_rankings
 GROUP BY as_of_date
 ORDER BY as_of_date DESC;
 
@@ -75,8 +44,8 @@ SELECT
     sector,
     industry,
     created_at
-FROM momentum_rankings
-WHERE as_of_date = (SELECT MAX(as_of_date) FROM momentum_rankings)
+FROM dbo.momentum_rankings
+WHERE as_of_date = (SELECT MAX(as_of_date) FROM dbo.momentum_rankings)
 ORDER BY rank;
 
 
@@ -89,30 +58,29 @@ SELECT
     ROUND(return_12m * 100.0, 2) AS return_12m_pct,
     COALESCE(sector, 'Unknown') AS sector,
     COALESCE(industry, 'Unknown') AS industry
-FROM momentum_rankings
-WHERE as_of_date = (SELECT MAX(as_of_date) FROM momentum_rankings)
+FROM dbo.momentum_rankings
+WHERE as_of_date = (SELECT MAX(as_of_date) FROM dbo.momentum_rankings)
   AND rank <= 25
 ORDER BY rank;
 
 
--- 10. Legfrissebb Top 25 szektoreloszlasa
+-- 10. Legfrissebb Top 100 szektoreloszlasa
 SELECT
     COALESCE(sector, 'Unknown') AS sector,
     COUNT(*) AS ticker_count,
     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS share_pct
-FROM momentum_rankings
-WHERE as_of_date = (SELECT MAX(as_of_date) FROM momentum_rankings)
-  AND rank <= 25
+FROM dbo.momentum_rankings
+WHERE as_of_date = (SELECT MAX(as_of_date) FROM dbo.momentum_rankings)
+  AND rank <= 100
 GROUP BY COALESCE(sector, 'Unknown')
 ORDER BY ticker_count DESC, sector;
 
 
 -- 11. Elozo elmentett nap Top 25 listaja
 WITH saved_dates AS (
-    SELECT DISTINCT as_of_date
-    FROM momentum_rankings
+    SELECT DISTINCT TOP (2) as_of_date
+    FROM dbo.momentum_rankings
     ORDER BY as_of_date DESC
-    LIMIT 2
 ), previous_date AS (
     SELECT MIN(as_of_date) AS as_of_date
     FROM saved_dates
@@ -123,7 +91,7 @@ SELECT
     r.ticker,
     ROUND(r.momentum_score, 4) AS momentum_score,
     COALESCE(r.sector, 'Unknown') AS sector
-FROM momentum_rankings AS r
+FROM dbo.momentum_rankings AS r
 JOIN previous_date AS p ON p.as_of_date = r.as_of_date
 WHERE r.rank <= 25
 ORDER BY r.rank;
@@ -135,16 +103,16 @@ WITH ordered_dates AS (
     SELECT
         as_of_date,
         DENSE_RANK() OVER (ORDER BY as_of_date DESC) AS date_order
-    FROM momentum_rankings
+    FROM dbo.momentum_rankings
     GROUP BY as_of_date
 ), current_top AS (
     SELECT r.ticker, r.rank
-    FROM momentum_rankings AS r
+    FROM dbo.momentum_rankings AS r
     JOIN ordered_dates AS d ON d.as_of_date = r.as_of_date
     WHERE d.date_order = 1 AND r.rank <= 25
 ), previous_top AS (
     SELECT r.ticker, r.rank
-    FROM momentum_rankings AS r
+    FROM dbo.momentum_rankings AS r
     JOIN ordered_dates AS d ON d.as_of_date = r.as_of_date
     WHERE d.date_order = 2 AND r.rank <= 25
 ), all_tickers AS (
@@ -181,10 +149,10 @@ ORDER BY
 -- Akkor erdemes megnezni, ha egy nap sorainak szama jelentosen elter a tobbitol.
 WITH daily_counts AS (
     SELECT as_of_date, COUNT(*) AS row_count
-    FROM momentum_rankings
+    FROM dbo.momentum_rankings
     GROUP BY as_of_date
 ), average_count AS (
-    SELECT AVG(row_count) AS avg_rows
+    SELECT AVG(CAST(row_count AS float)) AS avg_rows
     FROM daily_counts
 )
 SELECT
@@ -203,8 +171,8 @@ SELECT
     as_of_date,
     rank,
     COUNT(*) AS occurrences,
-    GROUP_CONCAT(ticker, ', ') AS tickers
-FROM momentum_rankings
+    STRING_AGG(CAST(ticker AS nvarchar(max)), N', ') AS tickers
+FROM dbo.momentum_rankings
 GROUP BY as_of_date, rank
 HAVING COUNT(*) > 1
 ORDER BY as_of_date DESC, rank;
@@ -216,8 +184,8 @@ SELECT
     ticker,
     COALESCE(sector, 'NULL') AS sector,
     COALESCE(industry, 'NULL') AS industry
-FROM momentum_rankings
-WHERE as_of_date = (SELECT MAX(as_of_date) FROM momentum_rankings)
+FROM dbo.momentum_rankings
+WHERE as_of_date = (SELECT MAX(as_of_date) FROM dbo.momentum_rankings)
   AND rank <= 25
   AND (
       sector IS NULL OR sector = '' OR sector = 'Unknown'
@@ -232,7 +200,7 @@ SELECT
     sector,
     industry,
     updated_at
-FROM security_metadata
+FROM dbo.security_metadata
 ORDER BY ticker;
 
 
@@ -242,14 +210,14 @@ SELECT
     sector,
     industry,
     updated_at,
-    CAST(julianday('now') - julianday(updated_at) AS INTEGER) AS age_days
-FROM security_metadata
-WHERE julianday('now') - julianday(updated_at) > 30
+    DATEDIFF(day, updated_at, SYSUTCDATETIME()) AS age_days
+FROM dbo.security_metadata
+WHERE updated_at < DATEADD(day, -30, SYSUTCDATETIME())
 ORDER BY age_days DESC, ticker;
 
 
 -- 18. Egy konkret ticker teljes tortenete.
--- Az NVDA helyere ird a vizsgalni kivant Yahoo tickert.
+-- Az NVDA helyere ird a vizsgalni kivant azonositot.
 SELECT
     as_of_date,
     ticker,
@@ -259,6 +227,6 @@ SELECT
     ROUND(return_12m * 100.0, 2) AS return_12m_pct,
     sector,
     industry
-FROM momentum_rankings
+FROM dbo.momentum_rankings
 WHERE ticker = 'NVDA'
 ORDER BY as_of_date DESC;

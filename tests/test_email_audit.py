@@ -1,15 +1,13 @@
-import sqlite3
-
+from sqlalchemy import select
 from storage.database import Database
+from storage.mssql import sent_reports
 
 
-def test_email_audit_preserves_existing_database(tmp_path):
-    path = tmp_path / "existing.db"
-    with sqlite3.connect(path) as con:
-        con.execute("CREATE TABLE portfolio (ticker TEXT)")
-        con.execute("INSERT INTO portfolio VALUES ('OLD')")
-    db = Database(path)
+def test_email_audit_persists_recipient_and_mode(storage_engine):
+    db = Database(engine=storage_engine)
     db.record_report("test@example.com", "Brief", 0, "opened")
     with db.connection() as con:
-        assert con.execute("SELECT ticker FROM portfolio").fetchone()[0] == "OLD"
-        assert con.execute("SELECT recipient, mode FROM sent_reports").fetchone()[:] == ("test@example.com", "opened")
+        row = con.execute(select(sent_reports)).mappings().one()
+    assert row["recipient"] == "test@example.com"
+    assert row["mode"] == "opened"
+    assert row["subject"] == "Brief"

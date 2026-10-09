@@ -73,10 +73,20 @@ Momentum uses 126- and 252-trading-day returns relative to the valid-universe
 mean, divided by each stock's annualized realized volatility. The two scores
 are averaged, without a skip-month adjustment.
 
-Daily rankings are upserted by `(as_of_date, ticker)` into
-`storage/momentum_lseg.db`. This new default keeps earlier market-source history
-separate. Existing databases are not deleted. If you override `MOMENTUM_DB_PATH`,
-choose a dedicated LSEG database rather than an old mixed-source file.
+Daily rankings are upserted by `(as_of_date, ticker)` into MSSQL
+`dbo.momentum_rankings`. Sector/industry cache entries are stored in
+`dbo.security_metadata`, keyed by ticker. Local Outlook actions also use
+`dbo.sent_reports` for email audit. Raw price history and fund memberships are
+not persisted. With 500 valid securities, a new date adds 500 ranking rows;
+rerunning that date updates its snapshot. Metadata rows are updated per ticker.
+
+Storage uses the deployed `Common.DB_adapter.DB_request` module and connection
+key `Analyst_TEST2_Airflow`. The adapter reads its own adjacent
+`DB_credentials.json`. No credentials need to be copied into this project.
+See [MSSQL setup](docs/mssql_storage.md), and run
+[the table creation script](sql/create_mssql_tables.sql) manually once before use.
+The application never creates or alters tables. Old SQLite files are neither
+read nor deleted, and their history is not migrated automatically.
 
 Sector composition uses the **Top 100** momentum-ranked securities in each of
 the current, one-month and three-month snapshots (top 20% when 500 are ranked).
@@ -122,11 +132,12 @@ Fallback environment variables are `MORNING_BRIEF_TO`, `MORNING_BRIEF_CC`, and
 `MORNING_BRIEF_BCC`. If no To value is supplied, `PORTFOLIO_MANAGER_EMAIL` or the
 local user-setting recipient is used. No recipient causes a delivery error.
 
-Set persistent writable paths, for example:
+The parent directory of `Common` must be on Python's import path on each worker
+and on the Streamlit host. These optional overrides have the defaults shown:
 
 ```dotenv
-MOMENTUM_DB_PATH=/opt/airflow/data/momentum_lseg.db
-MARKET_BRIEF_DB_PATH=/opt/airflow/data/market_brief.db
+BRIEF_DB_ADAPTER_MODULE=Common.DB_adapter.DB_request
+BRIEF_DB_CONNECTION=Analyst_TEST2_Airflow
 ```
 
 Test with scheduling paused and your own explicit To address; check CC/BCC too.
@@ -140,7 +151,7 @@ Neither function sends mail; loading does persist the momentum snapshot.
 python -m pytest -q
 ```
 
-Tests use fixture data and temporary databases, with email delivery stubbed.
+Tests use fixture data and temporary SQLAlchemy databases, with email delivery stubbed.
 They cover the internal loaders, shared workflow, Streamlit refresh and preview,
 failed-refresh invalidation, momentum, persistence and report rendering.
 These checks do not verify access to your live LSEG, SQL or Airflow environment.

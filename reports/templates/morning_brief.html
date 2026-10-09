@@ -14,7 +14,6 @@
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#eef5f0;border:1px solid #d8e5dd;">
 {% for fund in portfolio_sections %}<tr><td style="padding:8px 12px;font-size:13px;line-height:20px;"><a href="#{{ fund.anchor_id|e }}" style="color:#3a7059;text-decoration:underline;">{% if fund.fund_id is not none %}{{ fund.fund_name|e }} ({{ fund.fund_id|e }}){% else %}Portfolio{% endif %}</a></td></tr>{% endfor %}
 <tr><td style="padding:8px 12px;font-size:13px;line-height:20px;"><a href="#brief_momentum" style="color:#3a7059;text-decoration:underline;">Momentum Top 25</a></td></tr>
-{{ back_to_contents() }}
 {% if momentum_changes %}<tr><td style="padding:8px 12px;font-size:13px;line-height:20px;"><a href="#brief_changes" style="color:#3a7059;text-decoration:underline;">Momentum changes vs 1 month ago</a></td></tr>{% endif %}
 {% if momentum_sector_comparison %}<tr><td style="padding:8px 12px;font-size:13px;line-height:20px;"><a href="#brief_sectors" style="color:#3a7059;text-decoration:underline;">Momentum Top 100 sector distribution</a></td></tr>{% endif %}
 </table></td></tr>
